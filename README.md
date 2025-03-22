@@ -2,6 +2,45 @@
 
 This Google Apps Script automatically saves Gmail attachments to Google Drive, organized by the domain of the sender's email address. It creates a folder structure where each sender's domain gets its own folder, making it easy to track and organize attachments based on their source.
 
+## Installation Options
+
+> **IMPORTANT**: This script offers two installation options, choose the one that best suits your needs:
+
+### Option 1: Simple Installation (Single File)
+
+For a detailed step-by-step guide, refer to the [Installation Steps](./INSTALLATION_STEPS.md).
+
+If you want the quickest way to implement the script:
+
+1. Create a new project in Google Apps Script at [script.google.com](https://script.google.com)
+2. Copy all the content from the `single-file/Code.gs` file and paste it into the editor
+3. Replace `YOUR_SHARED_FOLDER_ID` with your Google Drive folder ID
+4. Save and run the `saveAttachmentsToDrive` function
+
+This option is ideal for users who want a quick installation without worrying about multiple files.
+
+### Option 2: Modular Installation (Multiple Files)
+
+If you prefer a more organized structure for long-term maintenance:
+
+1. Create a new project in Google Apps Script at [script.google.com](https://script.google.com)
+2. Create the following files in your project:
+   - `Config.gs`
+   - `Utils.gs`
+   - `UserManagement.gs`
+   - `AttachmentFilters.gs`
+   - `FolderManagement.gs`
+   - `AttachmentProcessing.gs`
+   - `GmailProcessing.gs`
+   - `Main.gs`
+   - `Debug.gs` (optional)
+   - `appsscript.json`
+3. Copy the content of each file from the `modular/` directory
+4. Update the `mainFolderId` in `Config.gs` with your Google Drive folder ID
+5. Save and run the `saveAttachmentsToDrive` function
+
+This option is better for ongoing development and maintenance.
+
 ## Features
 
 - **Domain-Based Organization**: Automatically creates folders based on sender domains
@@ -121,43 +160,9 @@ This script requires the following authorization scopes:
 - <https://www.googleapis.com/auth/script.scriptapp> (for creating triggers)
 - <https://www.googleapis.com/auth/script.external_request> (for external API calls if needed)
 
-## Installation
-
-### For Administrators
-
-1. Create a new Google Apps Script project at <https://script.google.com>
-2. Create the following files in your project:
-   - `Config.gs` (Configuration settings)
-   - `Utils.gs` (Utility functions)
-   - `UserManagement.gs` (User authorization)
-   - `AttachmentFilters.gs` (Filtering logic)
-   - `FolderManagement.gs` (Folder creation)
-   - `AttachmentProcessing.gs` (Save attachments)
-   - `GmailProcessing.gs` (Process Gmail threads)
-   - `Main.gs` (Entry points)
-   - `appsscript.json` (Script manifest)
-3. Copy the content of each file from this repository
-4. Create a shared folder in Google Drive that will store all attachments
-   - Get the folder ID from the URL (the long string after /folders/ in the URL)
-   - Update the `mainFolderId` in the `Config.gs` file with this ID
-5. Save the project with a descriptive name like "Gmail Attachment Organizer"
-6. Run the `requestPermissions` function to grant necessary access to your own account
-7. Run the `createTrigger` function to set up automatic execution every 15 minutes
-8. Share the script with other users who need to use it
-9. Monitor the execution logs periodically (View > Logs) to ensure smooth operation
-
-### For Each User
-
-1. Open the shared script project
-2. Run the function `requestPermissions` to grant necessary Gmail and Drive access
-   - This will automatically add you to the users list if successful
-3. Run the `verifyAllUsersPermissions` function to verify that permissions are correct
-4. You can manually run `testRun` once to test that everything works
-   - Check that attachments are correctly saved to the shared Drive
-   - Verify that emails are labeled correctly in your Gmail
-
 ## Managing Users
-
+- To remove users: Use `removeUserFromList('email@domain.com')`
+- To check user permissions: Run `verifyUserPermissions('
 - To add users manually: Use `addUserToList('email@domain.com')`
 - To remove users: Use `removeUserFromList('email@domain.com')`
 - To view current users: Run `listUsers()`
@@ -264,9 +269,5 @@ To adjust what files are saved or skipped:
 - **Thread Processing**: If a thread is processed but you can't find attachments, check if they were filtered out due to being small images or embedded content
 
 ## License
+[MIT License](./LICENSE.md)
 
-This project is provided as open-source software. Feel free to modify and distribute it according to your needs.
-
-## Credits
-
-Originally developed to help organize email attachments for teams and individuals who receive numerous emails with important attachments that need to be preserved and organized.
