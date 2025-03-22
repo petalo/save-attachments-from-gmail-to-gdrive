@@ -9,6 +9,22 @@
  * @param {GmailMessage} message - The email message containing the attachment
  * @param {Folder} domainFolder - The Google Drive folder for the domain
  * @returns {Object} Result object with success status and saved file (if successful)
+ *
+ * The function follows this flow:
+ * 1. Extracts attachment name and size for logging
+ * 2. Gets the email date to use for the file timestamp
+ * 3. Checks if a file with the same name already exists in the domain folder
+ * 4. If a file exists with the same name:
+ *    - Compares file sizes to detect duplicates
+ *    - If sizes match, considers it a duplicate and returns the existing file
+ *    - If sizes differ, generates a unique filename to avoid collision
+ * 5. Creates the file in Google Drive (either with original or unique name)
+ * 6. Sets the file creation date to match the email date
+ * 7. Verifies timestamp accuracy and logs warnings for significant differences
+ * 8. Returns a detailed result object with success status and file reference
+ *
+ * This function handles duplicate detection and collision avoidance to ensure
+ * no attachments are lost when processing emails.
  */
 function saveAttachment(attachment, message, domainFolder) {
   try {
@@ -105,6 +121,22 @@ function saveAttachment(attachment, message, domainFolder) {
  * @param {DriveFile} file - The Google Drive file
  * @param {Date} date - The date to set as creation date
  * @returns {boolean} True if successful, false otherwise
+ *
+ * The function follows this flow:
+ * 1. Logs the operation for tracking purposes
+ * 2. Skips standard Drive API methods that often fail with "File not found" errors
+ * 3. Implements a workaround by:
+ *    - Getting the original file's content as a blob
+ *    - Creating a new file with the same content in the same folder
+ *    - Setting the new file's name to match the original
+ *    - Adding the original date to the file's description metadata
+ *    - For text files, appending an invisible timestamp comment
+ *    - Deleting the original file by moving it to trash
+ * 4. Returns success even if the exact timestamp couldn't be set
+ *
+ * This workaround is necessary because Google Drive doesn't provide direct API
+ * methods to modify file creation dates, and this approach preserves the file's
+ * content while associating it with the email's timestamp.
  */
 function setFileCreationDate(file, date) {
   try {

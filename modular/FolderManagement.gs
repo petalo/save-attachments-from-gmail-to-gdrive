@@ -14,6 +14,21 @@
  * @param {string} sender - The sender's email address
  * @param {DriveFolder} mainFolder - The main folder to create the domain folder in
  * @returns {DriveFolder} The domain folder
+ *
+ * The function follows this flow:
+ * 1. Extracts the domain from the sender's email address using regex
+ * 2. Acquires a lock to prevent race conditions during folder creation
+ * 3. Checks if a folder for this domain already exists
+ * 4. If the folder exists, returns it immediately
+ * 5. If not, performs a double-check to handle edge cases where another
+ *    execution might have created the folder between checks
+ * 6. If still not found, creates a new folder for the domain
+ * 7. If any errors occur, falls back to using an "unknown" folder
+ * 8. As a last resort, returns the main folder if all else fails
+ *
+ * The function includes robust error handling and fallback mechanisms to ensure
+ * attachments are always saved somewhere, even if the ideal domain folder
+ * cannot be created or accessed.
  */
 function getDomainFolder(sender, mainFolder) {
   try {

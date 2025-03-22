@@ -5,8 +5,18 @@
 /**
  * Helper function to create consistent log entries with user information
  *
- * @param {string} message - The message to log
- * @param {string} level - The log level (INFO, WARNING, ERROR)
+ * This function creates standardized log entries that include timestamp, log level,
+ * and the current user's email address.
+ *
+ * @param {string} message - The message content to log
+ * @param {string} level - The log level (INFO, WARNING, ERROR), defaults to INFO if not specified
+ * @returns {void} This function doesn't return a value, but writes to the Apps Script log
+ *
+ * The function follows this flow:
+ * 1. Get the current user's email address using Session.getEffectiveUser()
+ * 2. Generate a timestamp in ISO format using new Date().toISOString()
+ * 3. Format the log message with timestamp, level, user email, and the provided message
+ * 4. Write the formatted message to the Apps Script log using Logger.log()
  */
 function logWithUser(message, level = "INFO") {
   const userEmail = Session.getEffectiveUser().getEmail();
@@ -16,9 +26,18 @@ function logWithUser(message, level = "INFO") {
 }
 
 /**
- * Helper function to get user-specific settings
+ * Helper function to get user-specific settings from the user's properties store
  *
- * @returns {Object} The user settings
+ * This function retrieves user-specific settings or returns defaults if none are found.
+ * The flow is:
+ * 1. Access the user's properties store
+ * 2. Define default settings based on global CONFIG
+ * 3. Try to retrieve saved settings
+ * 4. Parse and return saved settings if they exist, otherwise return defaults
+ *
+ * @returns {Object} The user settings object containing properties like maxFileSize,
+ *                   batchSize, skipDomains, and preferredFolder with either saved values
+ *                   or defaults from the CONFIG object
  */
 function getUserSettings() {
   const userProperties = PropertiesService.getUserProperties();
@@ -39,9 +58,18 @@ function getUserSettings() {
 }
 
 /**
- * Helper function to save user-specific settings
+ * Helper function to save user-specific settings to the user's properties store
  *
- * @param {Object} settings - The settings to save
+ * This function persists user settings by serializing them to JSON and storing them
+ * in the user's properties store. The flow is:
+ * 1. Access the user's properties store
+ * 2. Convert the settings object to a JSON string
+ * 3. Save the JSON string to the "userSettings" property
+ * 4. Log success or failure
+ *
+ * @param {Object} settings - The settings object to save, containing properties like
+ *                           maxFileSize, batchSize, skipDomains, and preferredFolder
+ * @returns {void} This function doesn't return a value, but logs the result of the operation
  */
 function saveUserSettings(settings) {
   const userProperties = PropertiesService.getUserProperties();
@@ -56,15 +84,24 @@ function saveUserSettings(settings) {
 /**
  * Helper function to implement retry logic with exponential backoff
  *
+ * This function attempts to execute an operation multiple times with increasing delays
+ * between attempts if failures occur. The flow is:
+ * 1. Try to execute the provided operation function
+ * 2. If successful, return the result immediately
+ * 3. If it fails, log the error and wait before retrying
+ * 4. For each retry, double the delay time (exponential backoff)
+ * 5. After all retries are exhausted, throw the last error encountered
+ *
  * Why it's necessary:
  * - Google Apps Script may encounter transient errors when interacting with Gmail and Drive
  * - These errors are often automatically resolved with a retry
  * - Exponential backoff prevents overloading the services
  * - Improves script robustness by handling temporary network conditions or quota limits
  *
- * @param {Function} operation - The operation to retry
- * @param {string} context - A description of the operation for logging
- * @returns {*} The result of the operation
+ * @param {Function} operation - The operation function to retry
+ * @param {string} context - A description of the operation for logging purposes
+ * @returns {*} The result of the operation if successful
+ * @throws {Error} The last error encountered if all retries fail
  */
 function withRetry(operation, context = "") {
   let lastError;
@@ -96,6 +133,15 @@ function withRetry(operation, context = "") {
  *
  * @param {string} userEmail - The email of the user acquiring the lock
  * @returns {boolean} True if the lock was acquired, false otherwise
+ *
+ * The function follows this flow:
+ * 1. First attempts to acquire a lock using LockService with a 30-second timeout
+ * 2. If successful, also creates a backup lock in Script Properties with user and timestamp
+ * 3. If LockService fails, checks for an existing lock in Script Properties
+ * 4. If a lock exists, checks if it has expired (based on CONFIG.executionLockTime)
+ * 5. If no lock exists or it has expired, acquires a new lock in Script Properties
+ *
+ * This dual locking mechanism provides redundancy in case either locking system fails.
  */
 function acquireExecutionLock(userEmail) {
   const scriptProperties = PropertiesService.getScriptProperties();
@@ -160,9 +206,18 @@ function acquireExecutionLock(userEmail) {
 }
 
 /**
- * Releases the execution lock
+ * Releases the execution lock previously acquired by acquireExecutionLock
+ *
+ * This function attempts to release both the LockService lock and the Script Properties lock.
+ * The flow is:
+ * 1. Try to release the LockService lock if the current execution has it
+ * 2. Check if there's a lock record in Script Properties
+ * 3. If the lock belongs to the current user, delete the lock property
+ * 4. If the lock belongs to another user, log a warning but don't delete it
+ * 5. If the lock data is invalid, delete it as a cleanup measure
  *
  * @param {string} userEmail - The email of the user releasing the lock
+ * @returns {void} This function doesn't return a value, but logs the result of the operation
  */
 function releaseExecutionLock(userEmail) {
   const scriptProperties = PropertiesService.getScriptProperties();

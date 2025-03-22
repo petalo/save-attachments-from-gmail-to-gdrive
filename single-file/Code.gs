@@ -16,6 +16,11 @@
  * - Timestamp preservation from original emails
  */
 
+
+//=============================================================================
+// CONFIG - CONFIGURATION
+//=============================================================================
+
 // Configuration constants
 const CONFIG = {
   mainFolderId: "YOUR_SHARED_FOLDER_ID", // Replace with your shared folder's ID
@@ -54,92 +59,33 @@ const CONFIG = {
   ],
 };
 
-/**
- * Main function that processes Gmail attachments for authorized users
- *
- * This function:
- * 1. Acquires an execution lock to prevent concurrent runs
- * 2. Gets the list of authorized users
- * 3. Processes emails for each user
- * 4. Logs completion
- *
- * @return {boolean} True if processing completed successfully, false if an error occurred or if no users are authorized.
- * The function follows a structured flow:
- * - It first attempts to acquire a lock to ensure no concurrent executions.
- * - It retrieves the list of authorized users.
- * - For each user, it processes their emails to save attachments to Google Drive.
- * - Logs are generated throughout the process to provide detailed information on the execution status.
- */
-function saveAttachmentsToDrive() {
-  try {
-    logWithUser("Starting attachment processing", "INFO");
-
-    // Acquire lock to prevent concurrent executions
-    if (!acquireExecutionLock()) {
-      logWithUser("Another instance is already running. Exiting.", "WARNING");
-      return false;
-    }
-
-    // Get authorized users
-    const users = getAuthorizedUsers();
-
-    if (!users || users.length === 0) {
-      logWithUser("No authorized users found. Exiting.", "WARNING");
-      return false;
-    }
-
-    logWithUser(`Processing attachments for ${users.length} users`, "INFO");
-
-    // Process each user
-    for (const user of users) {
-      processUserEmails(user);
-    }
-
-    logWithUser("Attachment processing completed successfully", "INFO");
-    return true;
-  } catch (error) {
-    logWithUser(`Error in saveAttachmentsToDrive: ${error.message}`, "ERROR");
-    return false;
-  }
-}
+//=============================================================================
+// UTILS - UTILITIES
+//=============================================================================
 
 /**
- * Creates a time-based trigger to run saveAttachmentsToDrive at specified intervals
- * If a trigger already exists, it will be deleted first
+ * Helper function to create consistent log entries with user information
  *
- * @return {Trigger} The created trigger object, which represents the scheduled execution of the function.
- * The function performs the following steps:
- * - Deletes any existing triggers for the saveAttachmentsToDrive function to avoid duplicates.
- * - Creates a new time-based trigger using the interval specified in the CONFIG object.
- * - Logs the creation of the new trigger and returns the trigger object.
+ * This function creates standardized log entries that include timestamp, log level,
+ * and the current user's email address.
+ *
+ * @param {string} message - The message content to log
+ * @param {string} level - The log level (INFO, WARNING, ERROR), defaults to INFO if not specified
+ * @returns {void} This function doesn't return a value, but writes to the Apps Script log
+ *
+ * The function follows this flow:
+ * 1. Get the current user's email address using Session.getEffectiveUser()
+ * 2. Generate a timestamp in ISO format using new Date().toISOString()
+ * 3. Format the log message with timestamp, level, user email, and the provided message
+ * 4. Write the formatted message to the Apps Script log using Logger.log()
  */
-function createTrigger() {
-  try {
-    // Delete existing triggers
-    const triggers = ScriptApp.getProjectTriggers();
-    for (const trigger of triggers) {
-      if (trigger.getHandlerFunction() === "saveAttachmentsToDrive") {
-        ScriptApp.deleteTrigger(trigger);
-        logWithUser("Deleted existing trigger", "INFO");
-      }
-    }
-
-    // Create new trigger
-    const trigger = ScriptApp.newTrigger("saveAttachmentsToDrive")
-      .timeBased()
-      .everyMinutes(CONFIG.triggerIntervalMinutes)
-      .create();
-
-    logWithUser(
-      `Created new trigger to run every ${CONFIG.triggerIntervalMinutes} minutes`,
-      "INFO"
-    );
-    return trigger;
-  } catch (error) {
-    logWithUser(`Error creating trigger: ${error.message}`, "ERROR");
-    throw error;
-  }
+function logWithUser(message, level = "INFO") {
+  const userEmail = Session.getEffectiveUser().getEmail();
+  const timestamp = new Date().toISOString();
+  const logMessage = `[${timestamp}] [${level}] [${userEmail}] ${message}`;
+  Logger.log(logMessage);
 }
+
 /**
  * Helper function to get user-specific settings from the user's properties store
  *
@@ -194,29 +140,6 @@ function saveUserSettings(settings) {
   } catch (e) {
     logWithUser(`Error saving user settings: ${e.message}`, "ERROR");
   }
-}
-
-/**
- * Helper function to create consistent log entries with user information
- *
- * This function creates standardized log entries that include timestamp, log level,
- * and the current user's email address.
- *
- * @param {string} message - The message content to log
- * @param {string} level - The log level (INFO, WARNING, ERROR), defaults to INFO if not specified
- * @returns {void} This function doesn't return a value, but writes to the Apps Script log
- *
- * The function follows this flow:
- * 1. Get the current user's email address using Session.getEffectiveUser()
- * 2. Generate a timestamp in ISO format using new Date().toISOString()
- * 3. Format the log message with timestamp, level, user email, and the provided message
- * 4. Write the formatted message to the Apps Script log using Logger.log()
- */
-function logWithUser(message, level = "INFO") {
-  const userEmail = Session.getEffectiveUser().getEmail();
-  const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] [${level}] [${userEmail}] ${message}`;
-  Logger.log(logMessage);
 }
 
 /**
@@ -424,6 +347,21 @@ function getUniqueFilename(originalFilename, folder) {
   const randomString = Utilities.getUuid().substring(0, 8);
   return `${baseName}_${timestamp}_${randomString}${extension}`;
 }
+
+/**
+ * Extracts the domain from an email address
+ *
+ * @param {string} email - The email address to extract the domain from
+ * @returns {string} The domain part of the email address, or "unknown" if not found
+ */
+function extractDomain(email) {
+  const domainMatch = email.match(/@([\w.-]+)/);
+  return domainMatch ? domainMatch[1] : "unknown";
+}
+
+//=============================================================================
+// USERMANAGEMENT - USER MANAGEMENT
+//=============================================================================
 
 /**
  * Verify if a user has granted all required permissions
@@ -835,6 +773,10 @@ function verifyAllUsersPermissions() {
   logWithUser("Permission verification completed", "INFO");
 }
 
+//=============================================================================
+// ATTACHMENTFILTERS - ATTACHMENT FILTERS
+//=============================================================================
+
 /**
  * Checks if a file should be skipped based on filter rules
  *
@@ -1029,6 +971,10 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
   return false;
 }
 
+//=============================================================================
+// FOLDERMANAGEMENT - FOLDER MANAGEMENT
+//=============================================================================
+
 /**
  * Get or create a folder for the sender's domain
  *
@@ -1059,9 +1005,8 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
  */
 function getDomainFolder(sender, mainFolder) {
   try {
-    // Extract the domain from the sender's email address using a robust regex
-    const domainMatch = sender.match(/@([\w.-]+)/);
-    const domain = domainMatch ? domainMatch[1] : "unknown";
+    // Extract the domain from the sender's email address
+    const domain = extractDomain(sender);
 
     // Use a lock to prevent race conditions when creating folders
     const lock = LockService.getScriptLock();
@@ -1169,6 +1114,10 @@ function getDomainFolder(sender, mainFolder) {
     }
   }
 }
+
+//=============================================================================
+// ATTACHMENTPROCESSING - ATTACHMENT PROCESSING
+//=============================================================================
 
 /**
  * Saves an attachment to the appropriate folder based on the sender's domain
@@ -1419,6 +1368,10 @@ function saveAttachmentLegacy(attachment, folder, messageDate) {
   // Return the file or null for compatibility
   return result.success ? result.file : null;
 }
+
+//=============================================================================
+// GMAILPROCESSING - GMAIL PROCESSING
+//=============================================================================
 
 /**
  * Gets or creates the processed label
@@ -1966,6 +1919,10 @@ function processMessages(thread, processedLabel, mainFolder) {
   }
 }
 
+//=============================================================================
+// MAIN - MAIN FUNCTIONS
+//=============================================================================
+
 /**
  * Main function that processes Gmail attachments for authorized users
  *
@@ -1975,7 +1932,12 @@ function processMessages(thread, processedLabel, mainFolder) {
  * 3. Processes emails for each user
  * 4. Logs completion
  *
- * @return {boolean} True if processing completed successfully
+ * @return {boolean} True if processing completed successfully, false if an error occurred or if no users are authorized.
+ * The function follows a structured flow:
+ * - It first attempts to acquire a lock to ensure no concurrent executions.
+ * - It retrieves the list of authorized users.
+ * - For each user, it processes their emails to save attachments to Google Drive.
+ * - Logs are generated throughout the process to provide detailed information on the execution status.
  */
 function saveAttachmentsToDrive() {
   try {
@@ -2011,10 +1973,14 @@ function saveAttachmentsToDrive() {
 }
 
 /**
- * Creates a time-based trigger to run saveAttachmentsToDrive every 15 minutes
+ * Creates a time-based trigger to run saveAttachmentsToDrive at specified intervals
  * If a trigger already exists, it will be deleted first
  *
- * @return {Trigger} The created trigger
+ * @return {Trigger} The created trigger object, which represents the scheduled execution of the function.
+ * The function performs the following steps:
+ * - Deletes any existing triggers for the saveAttachmentsToDrive function to avoid duplicates.
+ * - Creates a new time-based trigger using the interval specified in the CONFIG object.
+ * - Logs the creation of the new trigger and returns the trigger object.
  */
 function createTrigger() {
   try {
@@ -2030,7 +1996,7 @@ function createTrigger() {
     // Create new trigger
     const trigger = ScriptApp.newTrigger("saveAttachmentsToDrive")
       .timeBased()
-      .everyMinutes(15)
+      .everyMinutes(CONFIG.triggerIntervalMinutes)
       .create();
 
     logWithUser(

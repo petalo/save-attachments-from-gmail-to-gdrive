@@ -56,7 +56,7 @@ fs.writeFileSync(outputFile, header);
 
 // Process each file in the specified order
 fileOrder.forEach((filename) => {
-  const filePath = path.join(__dirname, filename);
+  const filePath = path.join(__dirname, "modular", filename);
 
   if (fs.existsSync(filePath)) {
     console.log(`Processing ${filename}...`);
@@ -80,7 +80,7 @@ ${content}`;
     fs.appendFileSync(outputFile, content);
   } else {
     console.warn(
-      `Warning! The file ${filename} does not exist and will be skipped.`
+      `Warning! The file modular/${filename} does not exist and will be skipped.`
     );
   }
 });

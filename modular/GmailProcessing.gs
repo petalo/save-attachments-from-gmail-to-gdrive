@@ -29,6 +29,19 @@ function getProcessedLabel() {
  * @param {string} userEmail - Email of the user to process
  * @param {boolean} oldestFirst - Whether to process oldest emails first (default: true)
  * @returns {boolean} True if processing was successful, false if an error occurred
+ *
+ * The function follows this flow:
+ * 1. Accesses the main Google Drive folder specified in CONFIG
+ * 2. Gets or creates the Gmail label used to mark processed threads
+ * 3. Builds search criteria to find unprocessed threads with attachments
+ * 4. Tests different search variations to find the most effective query
+ * 5. Retrieves and optionally sorts threads by date (oldest first if specified)
+ * 6. Processes threads in batches, with batch size determined by CONFIG.batchSize
+ * 7. Tracks progress and adjusts batch size dynamically to meet target counts
+ * 8. Returns success/failure status and logs detailed processing statistics
+ *
+ * This batch processing approach helps avoid hitting the 6-minute execution limit
+ * of Google Apps Script by processing a controlled number of threads per execution.
  */
 function processUserEmails(userEmail, oldestFirst = true) {
   try {
@@ -224,6 +237,20 @@ function processUserEmails(userEmail, oldestFirst = true) {
  * @param {DriveFolder} mainFolder - The main folder to save attachments to
  * @param {GmailLabel} processedLabel - The label to apply to processed threads
  * @returns {Object} Object containing count of threads with valid attachments
+ *
+ * The function follows this flow:
+ * 1. Iterates through each thread in the provided array
+ * 2. Checks if the thread is already processed (has the processed label)
+ * 3. For unprocessed threads:
+ *    - Examines each message in the thread for attachments
+ *    - Filters attachments based on sender domain and attachment properties
+ *    - Creates domain folders as needed and saves valid attachments
+ *    - Verifies file timestamps match email dates
+ * 4. Marks threads as processed if they had attachments (even if all were filtered out)
+ * 5. Counts and returns the number of threads that had valid attachments saved
+ *
+ * This function is optimized for batch processing to handle the 6-minute execution limit
+ * of Google Apps Script by focusing on counting threads with valid attachments.
  */
 function processThreadsWithCounting(threads, mainFolder, processedLabel) {
   let threadsWithAttachments = 0;
@@ -422,6 +449,20 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
  * @param {GmailLabel} processedLabel - The label to apply to processed threads
  * @param {DriveFolder} mainFolder - The main Google Drive folder
  * @returns {Object} Processing results with counts of processed attachments
+ *
+ * The function follows this flow:
+ * 1. Retrieves all messages in the thread
+ * 2. For each message:
+ *    - Gets all attachments and filters out those that should be skipped
+ *    - Extracts the sender's domain to determine the target folder
+ *    - Creates or uses an existing domain folder
+ *    - Saves each valid attachment to the appropriate folder
+ *    - Tracks statistics (saved, duplicates, errors, etc.)
+ * 3. Applies the processed label to the thread regardless of outcome
+ * 4. Returns a detailed result object with processing statistics
+ *
+ * This function is used by processThreadsWithCounting but provides more detailed
+ * statistics about the processing results.
  */
 function processMessages(thread, processedLabel, mainFolder) {
   try {

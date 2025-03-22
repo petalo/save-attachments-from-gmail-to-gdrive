@@ -14,7 +14,12 @@
  * 3. Processes emails for each user
  * 4. Logs completion
  *
- * @return {boolean} True if processing completed successfully
+ * @return {boolean} True if processing completed successfully, false if an error occurred or if no users are authorized.
+ * The function follows a structured flow:
+ * - It first attempts to acquire a lock to ensure no concurrent executions.
+ * - It retrieves the list of authorized users.
+ * - For each user, it processes their emails to save attachments to Google Drive.
+ * - Logs are generated throughout the process to provide detailed information on the execution status.
  */
 function saveAttachmentsToDrive() {
   try {
@@ -50,10 +55,14 @@ function saveAttachmentsToDrive() {
 }
 
 /**
- * Creates a time-based trigger to run saveAttachmentsToDrive every 15 minutes
+ * Creates a time-based trigger to run saveAttachmentsToDrive at specified intervals
  * If a trigger already exists, it will be deleted first
  *
- * @return {Trigger} The created trigger
+ * @return {Trigger} The created trigger object, which represents the scheduled execution of the function.
+ * The function performs the following steps:
+ * - Deletes any existing triggers for the saveAttachmentsToDrive function to avoid duplicates.
+ * - Creates a new time-based trigger using the interval specified in the CONFIG object.
+ * - Logs the creation of the new trigger and returns the trigger object.
  */
 function createTrigger() {
   try {
@@ -69,10 +78,13 @@ function createTrigger() {
     // Create new trigger
     const trigger = ScriptApp.newTrigger("saveAttachmentsToDrive")
       .timeBased()
-      .everyMinutes(15)
+      .everyMinutes(CONFIG.triggerIntervalMinutes)
       .create();
 
-    logWithUser("Created new trigger to run every 15 minutes", "INFO");
+    logWithUser(
+      `Created new trigger to run every ${CONFIG.triggerIntervalMinutes} minutes`,
+      "INFO"
+    );
     return trigger;
   } catch (error) {
     logWithUser(`Error creating trigger: ${error.message}`, "ERROR");

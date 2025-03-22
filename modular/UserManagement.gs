@@ -7,6 +7,20 @@
  *
  * @param {string} userEmail - The user's email address to verify
  * @returns {boolean} True if the user has all required permissions
+ *
+ * The function follows this flow:
+ * 1. Checks if the user is the current user or another user
+ * 2. Looks for cached permission results to avoid redundant checks
+ * 3. For the current user:
+ *    - Attempts to access Gmail and Drive services, which triggers permission prompts
+ *    - Returns true only if both services are accessible
+ * 4. For other users:
+ *    - Checks if they have already granted Gmail and Drive permissions
+ *    - Cannot trigger permission prompts for other users
+ * 5. Caches the result for future checks within the same script execution
+ *
+ * This verification is crucial for multi-user scripts to ensure each user
+ * has granted the necessary permissions before attempting to process their data.
  */
 function verifyUserPermissions(userEmail) {
   const currentUser = Session.getEffectiveUser().getEmail();
@@ -104,6 +118,16 @@ function verifyUserPermissions(userEmail) {
  * This function should be run manually by each user to grant permissions
  *
  * @returns {boolean} True if permissions were granted successfully
+ *
+ * The function follows this flow:
+ * 1. Attempts to access Gmail, which triggers the permission prompt
+ * 2. Attempts to access Drive, which triggers another permission prompt
+ * 3. If the main folder ID is configured, verifies access to that folder
+ * 4. Verifies all permissions using verifyUserPermissions()
+ * 5. If all permissions are granted, adds the user to the authorized users list
+ *
+ * This is typically the first function a new user should run before using the script,
+ * as it ensures all necessary permissions are granted and the user is properly registered.
  */
 function requestPermissions() {
   try {
