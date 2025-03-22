@@ -3,6 +3,82 @@
  */
 
 /**
+ * Determines if a message appears to contain an invoice based on keywords
+ * in the subject and body
+ *
+ * @param {GmailMessage} message - The Gmail message to analyze
+ * @returns {boolean} True if the message likely contains an invoice
+ */
+function isInvoiceMessage(message) {
+  if (!CONFIG.invoiceDetection) return false;
+
+  try {
+    // Check subject for invoice keywords
+    const subject = message.getSubject().toLowerCase();
+    for (const keyword of CONFIG.invoiceKeywords) {
+      if (subject.includes(keyword.toLowerCase())) {
+        logWithUser(
+          `Invoice keyword "${keyword}" found in subject: "${subject}"`,
+          "INFO"
+        );
+        return true;
+      }
+    }
+
+    // Check body for invoice keywords (optional, may affect performance)
+    try {
+      const body = message.getPlainBody().toLowerCase();
+      for (const keyword of CONFIG.invoiceKeywords) {
+        if (body.includes(keyword.toLowerCase())) {
+          logWithUser(
+            `Invoice keyword "${keyword}" found in message body`,
+            "INFO"
+          );
+          return true;
+        }
+      }
+    } catch (e) {
+      // If we can't get the body, just log and continue
+      logWithUser(`Could not check message body: ${e.message}`, "WARNING");
+    }
+
+    return false;
+  } catch (error) {
+    logWithUser(`Error checking for invoice: ${error.message}`, "ERROR");
+    return false;
+  }
+}
+
+/**
+ * Determines if an attachment appears to be an invoice based on file extension
+ *
+ * @param {GmailAttachment} attachment - The attachment to analyze
+ * @returns {boolean} True if the attachment likely is an invoice
+ */
+function isInvoiceAttachment(attachment) {
+  if (!CONFIG.invoiceDetection) return false;
+
+  try {
+    const fileName = attachment.getName().toLowerCase();
+
+    // Check file extension against invoice file types
+    for (const ext of CONFIG.invoiceFileTypes) {
+      if (fileName.endsWith(ext.toLowerCase())) {
+        return true;
+      }
+    }
+
+    return false;
+  } catch (error) {
+    logWithUser(
+      `Error checking if attachment is invoice: ${error.message}`,
+      "ERROR"
+    );
+    return false;
+  }
+}
+
+/**
  * Gets or creates the processed label
  *
  * @returns {GmailLabel} The Gmail label used to mark processed threads
@@ -331,6 +407,17 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
             if (validAttachments.length > 0) {
               const domainFolder = getDomainFolder(sender, mainFolder);
 
+              // Check if this message might contain invoices
+              const isInvoice = isInvoiceMessage(message);
+              let invoicesFolder = null;
+
+              // If invoice detection is enabled and this might be an invoice,
+              // get the invoices folder
+              if (CONFIG.invoiceDetection && isInvoice) {
+                logWithUser(`Message appears to contain invoice(s)`, "INFO");
+                invoicesFolder = getInvoicesFolder(mainFolder);
+              }
+
               // Process each valid attachment
               for (let k = 0; k < validAttachments.length; k++) {
                 const attachment = validAttachments[k];
@@ -381,6 +468,44 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
                         )} minutes`,
                         "WARNING"
                       );
+                    }
+
+                    // If this is an invoice or the attachment looks like an invoice,
+                    // also save it to the invoices folder
+                    if (invoicesFolder || isInvoiceAttachment(attachment)) {
+                      if (!invoicesFolder) {
+                        logWithUser(
+                          `Attachment appears to be an invoice based on file type`,
+                          "INFO"
+                        );
+                        invoicesFolder = getInvoicesFolder(mainFolder);
+                      }
+
+                      // Save a copy to the invoices folder
+                      try {
+                        logWithUser(
+                          `Saving copy to invoices folder: ${CONFIG.invoicesFolderName}`,
+                          "INFO"
+                        );
+                        const invoiceFile = saveAttachmentLegacy(
+                          attachment,
+                          invoicesFolder,
+                          messageDate
+                        );
+
+                        if (invoiceFile) {
+                          logWithUser(
+                            `Successfully saved invoice copy: ${attachment.getName()}`,
+                            "INFO"
+                          );
+                        }
+                      } catch (invoiceError) {
+                        logWithUser(
+                          `Error saving to invoices folder: ${invoiceError.message}`,
+                          "ERROR"
+                        );
+                        // Continue processing even if saving to invoices folder fails
+                      }
                     }
                   } catch (e) {
                     // Just log the error but don't stop processing
@@ -503,10 +628,22 @@ function processMessages(thread, processedLabel, mainFolder) {
           continue;
         }
 
+        // Check if this message might contain invoices
+        const isInvoice = isInvoiceMessage(message);
+        let invoicesFolder = null;
+
+        // If invoice detection is enabled and this might be an invoice,
+        // get the invoices folder
+        if (CONFIG.invoiceDetection && isInvoice) {
+          logWithUser(`Message appears to contain invoice(s)`, "INFO");
+          invoicesFolder = getInvoicesFolder(mainFolder);
+        }
+
         result.totalAttachments += validAttachments.length;
 
         // Process each valid attachment
         for (const attachment of validAttachments) {
+          // Save to domain folder
           const saveResult = saveAttachment(attachment, message, domainFolder);
 
           if (saveResult.success) {
@@ -515,6 +652,44 @@ function processMessages(thread, processedLabel, mainFolder) {
             } else {
               result.savedAttachments++;
               result.savedSize += attachment.getSize();
+
+              // If this is an invoice or the attachment looks like an invoice,
+              // also save it to the invoices folder
+              if (invoicesFolder || isInvoiceAttachment(attachment)) {
+                if (!invoicesFolder) {
+                  logWithUser(
+                    `Attachment appears to be an invoice based on file type`,
+                    "INFO"
+                  );
+                  invoicesFolder = getInvoicesFolder(mainFolder);
+                }
+
+                // Save a copy to the invoices folder
+                try {
+                  logWithUser(
+                    `Saving copy to invoices folder: ${CONFIG.invoicesFolderName}`,
+                    "INFO"
+                  );
+                  const invoiceResult = saveAttachment(
+                    attachment,
+                    message,
+                    invoicesFolder
+                  );
+
+                  if (invoiceResult.success && !invoiceResult.duplicate) {
+                    logWithUser(
+                      `Successfully saved invoice copy: ${attachment.getName()}`,
+                      "INFO"
+                    );
+                  }
+                } catch (invoiceError) {
+                  logWithUser(
+                    `Error saving to invoices folder: ${invoiceError.message}`,
+                    "ERROR"
+                  );
+                  // Continue processing even if saving to invoices folder fails
+                }
+              }
             }
           } else {
             result.skippedAttachments++;

@@ -3,6 +3,84 @@
  */
 
 /**
+ * Get or create the special folder for invoices
+ *
+ * This function creates or retrieves a special folder for storing invoices,
+ * regardless of the sender's domain. It uses the same locking mechanism as
+ * getDomainFolder to prevent race conditions.
+ *
+ * @param {DriveFolder} mainFolder - The main folder to create the invoices folder in
+ * @returns {DriveFolder} The invoices folder
+ *
+ * The function follows this flow:
+ * 1. Gets the folder name from CONFIG.invoicesFolderName
+ * 2. Acquires a lock to prevent race conditions during folder creation
+ * 3. Checks if the invoices folder already exists
+ * 4. If the folder exists, returns it immediately
+ * 5. If not, performs a double-check to handle edge cases
+ * 6. If still not found, creates a new folder for invoices
+ * 7. If any errors occur, falls back to using the main folder
+ */
+function getInvoicesFolder(mainFolder) {
+  try {
+    const folderName = CONFIG.invoicesFolderName;
+
+    // Use a lock to prevent race conditions when creating folders
+    const lock = LockService.getScriptLock();
+    try {
+      lock.tryLock(10000); // Wait up to 10 seconds for the lock
+
+      // First check if the folder exists
+      const folders = withRetry(
+        () => mainFolder.getFoldersByName(folderName),
+        "getting invoices folder"
+      );
+
+      if (folders.hasNext()) {
+        const folder = folders.next();
+        logWithUser(`Using existing invoices folder: ${folderName}`);
+        return folder;
+      } else {
+        // Double-check that the folder still doesn't exist
+        // This helps in cases where another execution created it just now
+        const doubleCheckFolders = withRetry(
+          () => mainFolder.getFoldersByName(folderName),
+          "double-checking invoices folder"
+        );
+
+        if (doubleCheckFolders.hasNext()) {
+          const folder = doubleCheckFolders.next();
+          logWithUser(
+            `Using existing invoices folder (after double-check): ${folderName}`
+          );
+          return folder;
+        }
+
+        // If we're still here, we can safely create the folder
+        const newFolder = withRetry(
+          () => mainFolder.createFolder(folderName),
+          "creating invoices folder"
+        );
+        logWithUser(`Created new invoices folder: ${folderName}`);
+        return newFolder;
+      }
+    } finally {
+      // Always release the lock
+      if (lock.hasLock()) {
+        lock.releaseLock();
+      }
+    }
+  } catch (error) {
+    logWithUser(
+      `Error getting invoices folder: ${error.message}. Using main folder as fallback.`,
+      "ERROR"
+    );
+    // Ultimate fallback: return the main folder
+    return mainFolder;
+  }
+}
+
+/**
  * Get or create a folder for the sender's domain
  *
  * Why it uses locks:

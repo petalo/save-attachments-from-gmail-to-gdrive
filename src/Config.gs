@@ -24,6 +24,11 @@ const CONFIG = {
   retryDelay: 1000, // Initial delay in milliseconds for retries
   maxRetryDelay: 10000, // Maximum delay in milliseconds for exponential backoff
   useEmailTimestamps: true, // Set to true to use email timestamps as file creation dates
+  // Invoice detection and special folder configuration
+  invoicesFolderName: "Facturas", // Name of the special folder for invoices
+  invoiceDetection: true, // Enable/disable invoice detection feature
+  invoiceKeywords: ["factura", "invoice", "receipt", "recibo", "pago"], // Keywords to search in subject/body
+  invoiceFileTypes: [".pdf"], // File types considered as invoices
   // List of MIME types that should always be saved as they are considered as real attachments
   attachmentTypesWhitelist: [
     "application/pdf",
