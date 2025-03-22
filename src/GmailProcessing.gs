@@ -412,10 +412,11 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
               let invoicesFolder = null;
 
               // If invoice detection is enabled and this might be an invoice,
-              // get the invoices folder
+              // get the invoices folder with domain subfolder
               if (CONFIG.invoiceDetection && isInvoice) {
                 logWithUser(`Message appears to contain invoice(s)`, "INFO");
-                invoicesFolder = getInvoicesFolder(mainFolder);
+                const senderDomain = extractDomain(sender);
+                invoicesFolder = getInvoicesFolder(mainFolder, senderDomain);
               }
 
               // Process each valid attachment
@@ -478,7 +479,11 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
                           `Attachment appears to be an invoice based on file type`,
                           "INFO"
                         );
-                        invoicesFolder = getInvoicesFolder(mainFolder);
+                        const senderDomain = extractDomain(sender);
+                        invoicesFolder = getInvoicesFolder(
+                          mainFolder,
+                          senderDomain
+                        );
                       }
 
                       // Save a copy to the invoices folder
@@ -633,10 +638,10 @@ function processMessages(thread, processedLabel, mainFolder) {
         let invoicesFolder = null;
 
         // If invoice detection is enabled and this might be an invoice,
-        // get the invoices folder
+        // get the invoices folder with domain subfolder
         if (CONFIG.invoiceDetection && isInvoice) {
           logWithUser(`Message appears to contain invoice(s)`, "INFO");
-          invoicesFolder = getInvoicesFolder(mainFolder);
+          invoicesFolder = getInvoicesFolder(mainFolder, domain);
         }
 
         result.totalAttachments += validAttachments.length;
@@ -661,7 +666,7 @@ function processMessages(thread, processedLabel, mainFolder) {
                     `Attachment appears to be an invoice based on file type`,
                     "INFO"
                   );
-                  invoicesFolder = getInvoicesFolder(mainFolder);
+                  invoicesFolder = getInvoicesFolder(mainFolder, domain);
                 }
 
                 // Save a copy to the invoices folder

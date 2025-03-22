@@ -6,22 +6,22 @@
  * Get or create the special folder for invoices
  *
  * This function creates or retrieves a special folder for storing invoices,
- * regardless of the sender's domain. It uses the same locking mechanism as
+ * with subfolders for each sender's domain. It uses the same locking mechanism as
  * getDomainFolder to prevent race conditions.
  *
  * @param {DriveFolder} mainFolder - The main folder to create the invoices folder in
- * @returns {DriveFolder} The invoices folder
+ * @param {string} domain - The sender's domain to create a subfolder for (optional)
+ * @returns {DriveFolder} The invoices folder or domain subfolder
  *
  * The function follows this flow:
  * 1. Gets the folder name from CONFIG.invoicesFolderName
  * 2. Acquires a lock to prevent race conditions during folder creation
  * 3. Checks if the invoices folder already exists
- * 4. If the folder exists, returns it immediately
- * 5. If not, performs a double-check to handle edge cases
- * 6. If still not found, creates a new folder for invoices
- * 7. If any errors occur, falls back to using the main folder
+ * 4. If the folder exists, returns it immediately if no domain is specified
+ * 5. If domain is specified, gets or creates a subfolder for that domain
+ * 6. If any errors occur, falls back to using the main folder
  */
-function getInvoicesFolder(mainFolder) {
+function getInvoicesFolder(mainFolder, domain = null) {
   try {
     const folderName = CONFIG.invoicesFolderName;
 
@@ -30,16 +30,16 @@ function getInvoicesFolder(mainFolder) {
     try {
       lock.tryLock(10000); // Wait up to 10 seconds for the lock
 
-      // First check if the folder exists
+      // First check if the main invoices folder exists
       const folders = withRetry(
         () => mainFolder.getFoldersByName(folderName),
         "getting invoices folder"
       );
 
+      let invoicesFolder;
       if (folders.hasNext()) {
-        const folder = folders.next();
+        invoicesFolder = folders.next();
         logWithUser(`Using existing invoices folder: ${folderName}`);
-        return folder;
       } else {
         // Double-check that the folder still doesn't exist
         // This helps in cases where another execution created it just now
@@ -49,20 +49,57 @@ function getInvoicesFolder(mainFolder) {
         );
 
         if (doubleCheckFolders.hasNext()) {
-          const folder = doubleCheckFolders.next();
+          invoicesFolder = doubleCheckFolders.next();
           logWithUser(
             `Using existing invoices folder (after double-check): ${folderName}`
           );
-          return folder;
+        } else {
+          // If we're still here, we can safely create the folder
+          invoicesFolder = withRetry(
+            () => mainFolder.createFolder(folderName),
+            "creating invoices folder"
+          );
+          logWithUser(`Created new invoices folder: ${folderName}`);
+        }
+      }
+
+      // If no domain is specified, return the main invoices folder
+      if (!domain) {
+        return invoicesFolder;
+      }
+
+      // If domain is specified, get or create a subfolder for that domain
+      const domainFolders = withRetry(
+        () => invoicesFolder.getFoldersByName(domain),
+        `getting domain subfolder in invoices folder: ${domain}`
+      );
+
+      if (domainFolders.hasNext()) {
+        const domainFolder = domainFolders.next();
+        logWithUser(`Using existing domain subfolder in invoices: ${domain}`);
+        return domainFolder;
+      } else {
+        // Double-check for the domain subfolder
+        const doubleCheckDomainFolders = withRetry(
+          () => invoicesFolder.getFoldersByName(domain),
+          `double-checking domain subfolder in invoices: ${domain}`
+        );
+
+        if (doubleCheckDomainFolders.hasNext()) {
+          const domainFolder = doubleCheckDomainFolders.next();
+          logWithUser(
+            `Using existing domain subfolder in invoices (after double-check): ${domain}`
+          );
+          return domainFolder;
         }
 
-        // If we're still here, we can safely create the folder
-        const newFolder = withRetry(
-          () => mainFolder.createFolder(folderName),
-          "creating invoices folder"
+        // Create the domain subfolder
+        const newDomainFolder = withRetry(
+          () => invoicesFolder.createFolder(domain),
+          `creating domain subfolder in invoices: ${domain}`
         );
-        logWithUser(`Created new invoices folder: ${folderName}`);
-        return newFolder;
+        logWithUser(`Created new domain subfolder in invoices: ${domain}`);
+        return newDomainFolder;
       }
     } finally {
       // Always release the lock
