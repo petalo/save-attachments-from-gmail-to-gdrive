@@ -1,0 +1,27 @@
+{
+  "name": "save-attachments-from-gmail-to-gdrive",
+  "version": "0.1.0",
+  "description": "Google Apps Script to automatically organize Gmail attachments in Google Drive",
+  "main": "combine-files.js",
+  "scripts": {
+    "build": "node combine-files.js",
+    "deploy": "node combine-files.js && clasp push",
+    "deploy:force": "node combine-files.js && clasp push -f",
+    "login": "clasp login",
+    "logout": "clasp logout",
+    "status": "clasp status",
+    "open": "clasp open-script",
+    "pull": "clasp pull",
+    "test": "clasp run testFolderId",
+    "version": "clasp version \"Automated deploy $(date)\"",
+    "deploy:version": "npm run deploy && npm run version",
+    "postinstall": "echo \"\\nSetup complete! Run 'npm run build' to generate files and 'npm run deploy' to upload to Google Apps Script.\\n\""
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "googleapis": "^148.0.0"
+  },
+  "devDependencies": {
+    "@google/clasp": "^2.4.2"
+  }
+}
