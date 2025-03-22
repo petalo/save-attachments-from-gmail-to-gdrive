@@ -1,12 +1,24 @@
 #!/usr/bin/env node
-
 /**
  * Script to combine all .gs files into a single Code.gs file
  * maintaining a logical order for the code structure.
+ *
+ * This script generates two output files:
+ * 1. A "Code.gs" file in the build/ directory with environment variables
+ *    substituted, ready to be pushed to Google Apps Script
+ * 2. A "Code.gs" file in the single-file/ directory without sensitive
+ *    environment variables, suitable for sharing publicly
+ *
+ * The script maintains a logical order of the source files to ensure
+ * proper code structure and dependencies in the combined output.
  */
 
 const fs = require("fs");
 const path = require("path");
+const dotenv = require("dotenv");
+
+// Load environment variables from .env file
+dotenv.config();
 
 // Logical order of files
 const fileOrder = [
@@ -20,6 +32,66 @@ const fileOrder = [
   "Main.gs", // Main functions
   // Debug files are intentionally not included
 ];
+
+// Function to get project timezone from appsscript.json
+function getProjectTimezone() {
+  try {
+    const appsscriptPath = path.join(__dirname, "appsscript.json");
+    if (fs.existsSync(appsscriptPath)) {
+      const appsscriptContent = fs.readFileSync(appsscriptPath, "utf8");
+      const appsscriptJson = JSON.parse(appsscriptContent);
+      return appsscriptJson.timeZone || "UTC";
+    }
+  } catch (error) {
+    console.warn(
+      `Warning: Could not read timezone from appsscript.json: ${error.message}`
+    );
+  }
+  return "UTC";
+}
+
+// Get the current timestamp in the project timezone
+function getFormattedTimestamp() {
+  const timezone = getProjectTimezone();
+  const now = new Date();
+  const currentYear = now.getFullYear(); // Obtenemos el año actual
+
+  // Format: MM/DD/YYYY HH:MM:SS Timezone
+  const options = {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: timezone,
+  };
+
+  try {
+    // Obtener la fecha formateada
+    let formattedDate = new Intl.DateTimeFormat("en-US", options).format(now);
+
+    // Asegurarnos de que el año es correcto (forzar año actual)
+    // La fecha formateada tiene formato "MM/DD/YYYY, HH:MM:SS"
+    // Reemplazamos el año en la fecha formateada
+    formattedDate = formattedDate.replace(/\d{4}/, currentYear);
+
+    return `${formattedDate} (${timezone})`;
+  } catch (error) {
+    console.warn(
+      `Warning: Could not format date with timezone ${timezone}: ${error.message}`
+    );
+    // Fallback seguro con el año correcto
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    const hours = String(now.getHours()).padStart(2, "0");
+    const minutes = String(now.getMinutes()).padStart(2, "0");
+    const seconds = String(now.getSeconds()).padStart(2, "0");
+
+    return `${month}/${day}/${currentYear}, ${hours}:${minutes}:${seconds} (fallback from ${timezone})`;
+  }
+}
 
 // Header for the combined file
 const header = `/**
@@ -48,15 +120,31 @@ if (!fs.existsSync(singleFileDir)) {
   fs.mkdirSync(singleFileDir, { recursive: true });
 }
 
-// Output file
-const outputFile = path.join(singleFileDir, "Code.gs");
+// Create the build directory if it doesn't exist
+const buildDir = path.join(__dirname, "build");
+if (!fs.existsSync(buildDir)) {
+  fs.mkdirSync(buildDir, { recursive: true });
+}
 
-// Start with the header
-fs.writeFileSync(outputFile, header);
+// Output files
+const outputFileSingle = path.join(singleFileDir, "Code.gs");
+const outputFileBuild = path.join(buildDir, "Code.gs");
+
+// Start with the header for single-file
+fs.writeFileSync(outputFileSingle, header);
+
+// Get build timestamp
+const buildTimestamp = getFormattedTimestamp();
+
+// Start with the header and timestamp comment for build version
+fs.writeFileSync(
+  outputFileBuild,
+  `// Build generated on: ${buildTimestamp}\n${header}`
+);
 
 // Process each file in the specified order
 fileOrder.forEach((filename) => {
-  const filePath = path.join(__dirname, "modular", filename);
+  const filePath = path.join(__dirname, "src", filename);
 
   if (fs.existsSync(filePath)) {
     console.log(`Processing ${filename}...`);
@@ -76,16 +164,43 @@ ${content}`;
     // Remove header comments from the original file if they exist
     content = content.replace(/\/\*\*[\s\S]*?\*\/\s*/, "");
 
-    // Append to the combined file
-    fs.appendFileSync(outputFile, content);
+    // Create a version for single-file (unchanged)
+    fs.appendFileSync(outputFileSingle, content);
+
+    // Create a version for build (with FOLDER_ID from .env)
+    let buildContent = content;
+    if (filename === "Config.gs" && process.env.FOLDER_ID) {
+      buildContent = buildContent.replace(
+        'mainFolderId: "__FOLDER_ID__"',
+        `mainFolderId: "${process.env.FOLDER_ID}"`
+      );
+    }
+    fs.appendFileSync(outputFileBuild, buildContent);
   } else {
     console.warn(
-      `Warning! The file modular/${filename} does not exist and will be skipped.`
+      `Warning! The file src/${filename} does not exist and will be skipped.`
     );
   }
 });
 
-console.log(`\nCombined file created: ${outputFile}`);
+console.log(`\nCombined files created:`);
+console.log(`- ${outputFileSingle} (with placeholder FOLDER_ID)`);
+
+// Ocultar parte del FOLDER_ID, mostrar solo 4 caracteres al principio y al final
+let displayFolderId = "not found";
+if (process.env.FOLDER_ID) {
+  const id = process.env.FOLDER_ID;
+  if (id.length > 8) {
+    displayFolderId = `${id.substring(0, 4)}...${id.substring(id.length - 4)}`;
+  } else {
+    displayFolderId = id;
+  }
+  console.log(
+    `- ${outputFileBuild} (with FOLDER_ID from .env: ${displayFolderId})`
+  );
+} else {
+  console.log(`- ${outputFileBuild} (FOLDER_ID not found in .env file)`);
+}
 
 // Function to get an appropriate description for each module
 function getModuleDescription(moduleName) {
@@ -101,4 +216,25 @@ function getModuleDescription(moduleName) {
   };
 
   return descriptions[moduleName] || moduleName;
+}
+
+// Copy appsscript.json to both directories
+try {
+  const appsscriptPath = path.join(__dirname, "appsscript.json");
+  if (fs.existsSync(appsscriptPath)) {
+    // Copy to single-file directory
+    fs.copyFileSync(
+      appsscriptPath,
+      path.join(singleFileDir, "appsscript.json")
+    );
+
+    // Copy to build directory
+    fs.copyFileSync(appsscriptPath, path.join(buildDir, "appsscript.json"));
+
+    console.log("appsscript.json copied to both directories");
+  } else {
+    console.warn("Warning! appsscript.json not found in workspace root");
+  }
+} catch (error) {
+  console.error(`Error copying appsscript.json: ${error.message}`);
 }
