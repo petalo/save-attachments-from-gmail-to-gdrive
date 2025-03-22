@@ -231,3 +231,14 @@ function getUniqueFilename(originalFilename, folder) {
   const randomString = Utilities.getUuid().substring(0, 8);
   return `${baseName}_${timestamp}_${randomString}${extension}`;
 }
+
+/**
+ * Extracts the domain from an email address
+ *
+ * @param {string} email - The email address to extract the domain from
+ * @returns {string} The domain part of the email address, or "unknown" if not found
+ */
+function extractDomain(email) {
+  const domainMatch = email.match(/@([\w.-]+)/);
+  return domainMatch ? domainMatch[1] : "unknown";
+}

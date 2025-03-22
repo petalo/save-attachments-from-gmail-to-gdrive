@@ -17,9 +17,8 @@
  */
 function getDomainFolder(sender, mainFolder) {
   try {
-    // Extract the domain from the sender's email address using a robust regex
-    const domainMatch = sender.match(/@([\w.-]+)/);
-    const domain = domainMatch ? domainMatch[1] : "unknown";
+    // Extract the domain from the sender's email address
+    const domain = extractDomain(sender);
 
     // Use a lock to prevent race conditions when creating folders
     const lock = LockService.getScriptLock();
