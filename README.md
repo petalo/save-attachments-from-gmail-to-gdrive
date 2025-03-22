@@ -14,10 +14,61 @@ If you want the quickest way to implement the script:
 
 1. Create a new project in Google Apps Script at [script.google.com](https://script.google.com)
 2. Copy all the content from the `single-file/Code.gs` file and paste it into the editor
-3. Replace `YOUR_SHARED_FOLDER_ID` with your Google Drive folder ID
+3. Replace `__FOLDER_ID__` with your Google Drive folder ID
 4. Save and run the `saveAttachmentsToDrive` function
 
 This option is ideal for users who want a quick installation without worrying about multiple files.
+
+### Option 1b: Pre-configured Installation (Build Version)
+
+For a version with FOLDER_ID pre-configured from your environment:
+
+1. Create a `.env` file in the root directory with your FOLDER_ID (see `.env.example`)
+2. Run `npm install` to install dependencies
+3. Run `npm run build` to generate the pre-configured script in the `build` directory
+4. Run `npm run deploy` to upload the script to Google Apps Script
+5. Run `npm run open` to open the script in the Google Apps Script editor
+
+This option is ideal for development or when deploying to multiple environments.
+
+## Available Commands
+
+Once the dependencies are installed, you can use the following commands:
+
+```bash
+# Generate files in single-file and build directories
+npm run build
+
+# Generate files and upload them to Google Apps Script
+npm run deploy
+
+# Force upload to Google Apps Script (overwrites any changes)
+npm run deploy:force
+
+# Login to Google
+npm run login
+
+# Logout
+npm run logout
+
+# View status of files
+npm run status
+
+# Open the script in Google Apps Script editor
+npm run open
+
+# Download the latest version of the script from Google Apps Script
+npm run pull
+
+# Test if the folder ID is valid
+npm run test
+
+# Create a new version of the script
+npm run version
+
+# Upload and create version in a single step
+npm run deploy:version
+```
 
 ### Option 2: Modular Installation (Multiple Files)
 
@@ -35,7 +86,7 @@ If you prefer a more organized structure for long-term maintenance:
    - `Main.gs`
    - `Debug.gs` (optional)
    - `appsscript.json`
-3. Copy the content of each file from the `modular/` directory
+3. Copy the content of each file from the `src/` directory
 4. Update the `mainFolderId` in `Config.gs` with your Google Drive folder ID
 5. Save and run the `saveAttachmentsToDrive` function
 
