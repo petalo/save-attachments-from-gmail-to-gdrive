@@ -10,7 +10,7 @@
     "login": "clasp login",
     "logout": "clasp logout",
     "status": "clasp status",
-    "open": "clasp open-script",
+    "open": "clasp open",
     "pull": "clasp pull",
     "test": "clasp run testFolderId",
     "version": "clasp version \"Automated deploy $(date)\"",
