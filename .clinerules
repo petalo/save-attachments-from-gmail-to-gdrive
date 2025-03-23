@@ -1,0 +1,150 @@
+# Cline Rules for Gmail Attachment Organizer
+
+## Project Patterns
+
+### Code Organization
+
+- The project follows a modular structure with clear separation of concerns
+- Each module (.gs file) has a specific responsibility
+- Functions are well-documented with JSDoc comments
+- Configuration is centralized in the CONFIG object in Config.gs
+
+### Naming Conventions
+
+- Function names use camelCase
+- Constants use UPPER_SNAKE_CASE
+- Configuration options are grouped in the CONFIG object
+- File names reflect their purpose (e.g., AttachmentProcessing.gs)
+
+### Error Handling
+
+- Functions use try/catch blocks for error handling
+- Errors are logged with context using logWithUser function
+- API operations use retry logic with exponential backoff
+- Functions return meaningful values on success/failure
+
+## Implementation Paths
+
+### Main Execution Flow
+
+1. Script starts with saveAttachmentsToDrive function in Main.gs
+2. Acquires execution lock to prevent concurrent runs
+3. Gets authorized users from UserManagement.gs
+4. Processes emails for each user via GmailProcessing.gs
+5. For each thread, processes attachments via AttachmentProcessing.gs
+6. Saves attachments to appropriate folders via FolderManagement.gs
+7. Marks threads as processed and releases lock
+
+### Deployment Process
+
+1. Local development using separate .gs files in src/ directory
+2. Build process combines files into single Code.js file
+3. Deployment via clasp push or manual copy-paste
+4. Configuration via CONFIG object or environment variables
+
+## User Preferences
+
+### Configuration Options
+
+- Users can customize various aspects through the CONFIG object
+- Common customizations include:
+  - mainFolderId: ID of the Google Drive folder for attachments
+  - processedLabelName: Label for processed threads
+  - skipDomains: Domains to exclude from processing
+  - batchSize: Number of threads to process per execution
+  - skipSmallImages: Whether to filter out small images
+  - triggerIntervalMinutes: How often the script runs
+
+### Installation Preferences
+
+- Two main installation options:
+  1. Single-file version for simplicity
+  2. Modular version for better maintenance
+- Environment-based configuration for different deployment scenarios
+
+## Known Challenges
+
+### Google Apps Script Limitations
+
+- 6-minute execution time limit requires batch processing
+- Quota limits for Gmail and Drive API operations
+- Limited ES6+ support in the runtime environment
+- No direct file system access or external dependencies
+
+### Gmail-Specific Issues
+
+- Thread-level processing means new messages in processed threads are skipped
+- Embedded images often appear as attachments and need filtering
+- Content-Disposition headers may be inconsistent across email clients
+
+### Google Drive Constraints
+
+- Cannot directly set arbitrary creation dates for files
+- Need custom logic to prevent duplicate folders
+- Folder operations can be slow with many items
+
+## Project Evolution
+
+### Version History
+
+- Initial development focused on core attachment saving functionality
+- Added domain-based organization for better file management
+- Implemented intelligent filtering to handle embedded images
+- Added multi-user support for shared environments
+- Created multiple deployment options for different user needs
+
+### Design Decisions
+
+- Thread-level processing chosen for efficiency and simplicity
+- Domain-based organization provides intuitive structure
+- Attachment filtering uses multiple approaches for accuracy
+- Configuration centralized for easy customization
+- Error handling designed for graceful failure
+
+## Tool Usage Patterns
+
+### Google Apps Script Services
+
+- GmailApp for email operations
+- DriveApp for file and folder operations
+- PropertiesService for storing script state
+- ScriptApp for managing triggers
+- Logger for debugging and logging
+
+### Development Tools
+
+- clasp for local development and deployment
+- Node.js for build scripts
+- dotenv for environment variable management
+- npm scripts for common operations
+
+## Critical Implementation Details
+
+### Attachment Filtering Logic
+
+- Uses multiple approaches to identify real attachments:
+  - MIME type whitelist for important document types
+  - Content-disposition analysis
+  - HTML email image URL detection
+  - Filename pattern recognition
+  - Size-based filtering
+
+### Thread Labeling System
+
+- Labels are applied at the thread level, not individual messages
+- A thread is labeled when at least one valid attachment is saved
+- New messages in labeled threads won't be automatically processed
+- Users can manually remove labels to force reprocessing
+
+### User Management
+
+- Users are processed in a round-robin fashion
+- Each execution processes one user from the queue
+- Permission verification before processing
+- Functions for adding/removing users
+
+### Execution Locking
+
+- Script properties used to implement a simple locking mechanism
+- Locks have a maximum duration to prevent permanent locking
+- Lock acquisition includes timestamp for expiration calculation
