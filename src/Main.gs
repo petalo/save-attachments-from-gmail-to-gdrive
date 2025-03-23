@@ -6,17 +6,84 @@
  */
 
 /**
+ * Validates the configuration settings to ensure all required values are properly set
+ *
+ * @return {boolean} True if the configuration is valid, throws an error otherwise
+ */
+function validateConfig() {
+  // Check essential folder and label settings
+  if (!CONFIG.mainFolderId || CONFIG.mainFolderId === "__FOLDER_ID__") {
+    throw new Error(
+      "Configuration error: mainFolderId is not set. Please set a valid Google Drive folder ID."
+    );
+  }
+
+  // Validate AI configuration if enabled
+  if (CONFIG.invoiceDetection === "gemini") {
+    if (
+      CONFIG.geminiApiKey === "__GEMINI_API_KEY__" &&
+      !PropertiesService.getScriptProperties().getProperty(
+        CONFIG.geminiApiKeyPropertyName
+      )
+    ) {
+      throw new Error(
+        "Configuration error: Gemini API key is not set but Gemini invoice detection is enabled."
+      );
+    }
+  } else if (CONFIG.invoiceDetection === "openai") {
+    if (
+      CONFIG.openAIApiKey === "__OPENAI_API_KEY__" &&
+      !PropertiesService.getScriptProperties().getProperty(
+        CONFIG.openAIApiKeyPropertyName
+      )
+    ) {
+      throw new Error(
+        "Configuration error: OpenAI API key is not set but OpenAI invoice detection is enabled."
+      );
+    }
+  }
+
+  // Validate numerical values are within acceptable ranges
+  if (CONFIG.aiConfidenceThreshold < 0 || CONFIG.aiConfidenceThreshold > 1) {
+    throw new Error(
+      "Configuration error: aiConfidenceThreshold must be between 0 and 1."
+    );
+  }
+
+  if (CONFIG.batchSize < 1) {
+    throw new Error("Configuration error: batchSize must be at least 1.");
+  }
+
+  if (CONFIG.triggerIntervalMinutes < 1) {
+    throw new Error(
+      "Configuration error: triggerIntervalMinutes must be at least 1."
+    );
+  }
+
+  // Validate interdependent settings
+  if (CONFIG.onlyAnalyzePDFs && !CONFIG.invoiceFileTypes.includes(".pdf")) {
+    throw new Error(
+      "Configuration error: onlyAnalyzePDFs is enabled but .pdf is not in invoiceFileTypes."
+    );
+  }
+
+  return true;
+}
+
+/**
  * Main function that processes Gmail attachments for authorized users
  *
  * This function:
- * 1. Acquires an execution lock to prevent concurrent runs
- * 2. Gets the list of authorized users
- * 3. Processes emails for each user
- * 4. Logs completion
+ * 1. Validates the configuration
+ * 2. Acquires an execution lock to prevent concurrent runs
+ * 3. Gets the list of authorized users
+ * 4. Processes emails for each user
+ * 5. Logs completion
  *
  * @return {boolean} True if processing completed successfully, false if an error occurred or if no users are authorized.
  * The function follows a structured flow:
- * - It first attempts to acquire a lock to ensure no concurrent executions.
+ * - It first validates the configuration to ensure all required settings are properly set.
+ * - It attempts to acquire a lock to ensure no concurrent executions.
  * - It retrieves the list of authorized users.
  * - For each user, it processes their emails to save attachments to Google Drive.
  * - Logs are generated throughout the process to provide detailed information on the execution status.
@@ -24,6 +91,10 @@
 function saveAttachmentsToDrive() {
   try {
     logWithUser("Starting attachment processing", "INFO");
+
+    // Validate configuration
+    validateConfig();
+    logWithUser("Configuration validated successfully", "INFO");
 
     // Acquire lock to prevent concurrent executions
     if (!acquireExecutionLock()) {

@@ -3,15 +3,128 @@
  */
 
 /**
- * Determines if a message appears to contain an invoice based on keywords
- * in the subject and body
+ * Determines if a message appears to contain an invoice using AI or keywords
  *
  * @param {GmailMessage} message - The Gmail message to analyze
  * @returns {boolean} True if the message likely contains an invoice
  */
 function isInvoiceMessage(message) {
-  if (!CONFIG.invoiceDetection) return false;
+  // Early return if invoice detection is disabled
+  if (CONFIG.invoiceDetection === false) return false;
 
+  try {
+    // Check if any AI detection is enabled
+    if (
+      CONFIG.invoiceDetection === "gemini" ||
+      CONFIG.invoiceDetection === "openai"
+    ) {
+      // Check if message has attachments and if any are PDFs (with stricter checking)
+      if (CONFIG.onlyAnalyzePDFs) {
+        const attachments = message.getAttachments();
+        let hasPDF = false;
+
+        for (const attachment of attachments) {
+          const fileName = attachment.getName().toLowerCase();
+          const contentType = attachment.getContentType().toLowerCase();
+
+          // Strict PDF check - both extension and MIME type
+          if (CONFIG.strictPdfCheck) {
+            if (fileName.endsWith(".pdf") && contentType.includes("pdf")) {
+              hasPDF = true;
+              break;
+            }
+          } else {
+            // Legacy check - just extension
+            if (fileName.endsWith(".pdf")) {
+              hasPDF = true;
+              break;
+            }
+          }
+        }
+
+        // Skip AI if there are no PDF attachments
+        if (!hasPDF) {
+          logWithUser("No PDF attachments found, skipping AI analysis", "INFO");
+          // Don't fall back to keywords when there are no PDFs if onlyAnalyzePDFs is true
+          // This prevents non-PDF attachments from being classified as invoices based on keywords
+          return false;
+        }
+      }
+
+      // Check if sender domain should be skipped
+      const sender = message.getFrom();
+      const domain = extractDomain(sender);
+      if (CONFIG.skipAIForDomains && CONFIG.skipAIForDomains.includes(domain)) {
+        logWithUser(`Skipping AI for domain ${domain}, using keywords`, "INFO");
+        return checkKeywords(message);
+      }
+
+      // Try Gemini detection first if enabled
+      if (CONFIG.invoiceDetection === "gemini") {
+        try {
+          const isInvoice = GeminiDetection.isInvoiceWithGemini(message);
+          logWithUser(`Gemini invoice detection result: ${isInvoice}`, "INFO");
+          return isInvoice;
+        } catch (geminiError) {
+          logWithUser(
+            `Gemini detection error: ${geminiError.message}, trying fallback options`,
+            "WARNING"
+          );
+
+          // Try OpenAI if enabled as fallback
+          if (CONFIG.invoiceDetection === "openai") {
+            try {
+              const isInvoice = OpenAIDetection.isInvoiceWithOpenAI(message);
+              logWithUser(
+                `OpenAI invoice detection result: ${isInvoice}`,
+                "INFO"
+              );
+              return isInvoice;
+            } catch (openaiError) {
+              logWithUser(
+                `OpenAI detection error: ${openaiError.message}, falling back to keywords`,
+                "WARNING"
+              );
+              return CONFIG.fallbackToKeywords ? checkKeywords(message) : false;
+            }
+          } else if (CONFIG.fallbackToKeywords) {
+            return checkKeywords(message);
+          } else {
+            return false;
+          }
+        }
+      }
+      // Try OpenAI if Gemini is disabled but OpenAI is enabled
+      else if (CONFIG.invoiceDetection === "openai") {
+        try {
+          const isInvoice = OpenAIDetection.isInvoiceWithOpenAI(message);
+          logWithUser(`OpenAI invoice detection result: ${isInvoice}`, "INFO");
+          return isInvoice;
+        } catch (openaiError) {
+          logWithUser(
+            `OpenAI detection error: ${openaiError.message}, falling back to keywords`,
+            "WARNING"
+          );
+          return CONFIG.fallbackToKeywords ? checkKeywords(message) : false;
+        }
+      }
+    }
+
+    // Use keyword detection if no AI is enabled
+    return checkKeywords(message);
+  } catch (error) {
+    logWithUser(`Error in invoice detection: ${error.message}`, "ERROR");
+    return false;
+  }
+}
+
+/**
+ * Helper function to check for invoice keywords in message subject and body
+ *
+ * @param {GmailMessage} message - The Gmail message to check
+ * @returns {boolean} True if invoice keywords are found
+ */
+function checkKeywords(message) {
   try {
     // Check subject for invoice keywords
     const subject = message.getSubject().toLowerCase();
@@ -44,27 +157,45 @@ function isInvoiceMessage(message) {
 
     return false;
   } catch (error) {
-    logWithUser(`Error checking for invoice: ${error.message}`, "ERROR");
+    logWithUser(
+      `Error checking for invoice keywords: ${error.message}`,
+      "ERROR"
+    );
     return false;
   }
 }
 
 /**
- * Determines if an attachment appears to be an invoice based on file extension
+ * Determines if an attachment appears to be an invoice based on file extension and content type
  *
  * @param {GmailAttachment} attachment - The attachment to analyze
  * @returns {boolean} True if the attachment likely is an invoice
  */
 function isInvoiceAttachment(attachment) {
-  if (!CONFIG.invoiceDetection) return false;
+  if (CONFIG.invoiceDetection === false) return false;
 
   try {
     const fileName = attachment.getName().toLowerCase();
+    const contentType = attachment.getContentType().toLowerCase();
 
-    // Check file extension against invoice file types
+    // Check file extension against invoice file types with stricter checking
     for (const ext of CONFIG.invoiceFileTypes) {
-      if (fileName.endsWith(ext.toLowerCase())) {
-        return true;
+      const lowerExt = ext.toLowerCase();
+
+      // Strict PDF check - both extension and MIME type
+      if (CONFIG.strictPdfCheck) {
+        if (
+          lowerExt === ".pdf" &&
+          fileName.endsWith(lowerExt) &&
+          contentType.includes("pdf")
+        ) {
+          return true;
+        }
+      } else {
+        // Legacy check - just extension
+        if (fileName.endsWith(lowerExt)) {
+          return true;
+        }
       }
     }
 
@@ -413,7 +544,7 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
 
               // If invoice detection is enabled and this might be an invoice,
               // get the invoices folder with domain subfolder
-              if (CONFIG.invoiceDetection && isInvoice) {
+              if (CONFIG.invoiceDetection !== false && isInvoice) {
                 logWithUser(`Message appears to contain invoice(s)`, "INFO");
                 const senderDomain = extractDomain(sender);
                 invoicesFolder = getInvoicesFolder(mainFolder, senderDomain);
@@ -639,7 +770,7 @@ function processMessages(thread, processedLabel, mainFolder) {
 
         // If invoice detection is enabled and this might be an invoice,
         // get the invoices folder with domain subfolder
-        if (CONFIG.invoiceDetection && isInvoice) {
+        if (CONFIG.invoiceDetection !== false && isInvoice) {
           logWithUser(`Message appears to contain invoice(s)`, "INFO");
           invoicesFolder = getInvoicesFolder(mainFolder, domain);
         }

@@ -297,3 +297,28 @@ function extractDomain(email) {
   const domainMatch = email.match(/@([\w.-]+)/);
   return domainMatch ? domainMatch[1] : "unknown";
 }
+
+/**
+ * Test function to verify if the folder ID is valid
+ * This function can be run directly from the Apps Script editor
+ * to check if the configured folder ID is correct
+ */
+function testFolderId() {
+  try {
+    const folder = DriveApp.getFolderById(CONFIG.mainFolderId);
+    const folderName = folder.getName();
+    Logger.log(
+      `Successfully found folder: ${folderName} with ID: ${CONFIG.mainFolderId}`
+    );
+    return {
+      success: true,
+      folderName: folderName,
+      folderId: CONFIG.mainFolderId,
+    };
+  } catch (e) {
+    Logger.log(
+      `Error accessing folder with ID ${CONFIG.mainFolderId}: ${e.message}`
+    );
+    return { success: false, error: e.message, folderId: CONFIG.mainFolderId };
+  }
+}
