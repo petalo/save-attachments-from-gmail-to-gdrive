@@ -9,6 +9,8 @@
  * Key features:
  * - Automatic organization by sender domain
  * - Configurable filters for file types and sizes
+ * - AI-based invoice detection using Google Gemini or OpenAI
+ * - Privacy-focused metadata analysis for invoice detection
  * - Scheduled processing via time-based triggers
  * - Multi-user support with permission management
  * - Robust error handling with retry logic
@@ -23,23 +25,55 @@
 
 // Configuration constants
 const CONFIG = {
-  mainFolderId: "__FOLDER_ID__", // Replace with your shared folder's ID
-  processedLabelName: "GDrive_Processed", // Label to mark processed threads
+  mainFolderId: "__FOLDER_ID__", // Replace with your Google Drive shared folder's ID
+  processedLabelName: "GDrive_Processed", // Label to mark processed threads in Gmail
   skipDomains: ["example.com", "noreply.com"], // Skip emails from these domains
-  triggerIntervalMinutes: 15, // Interval in minutes for the trigger execution
+  triggerIntervalMinutes: 10, // Interval in minutes for the trigger execution
   batchSize: 10, // Process this many threads at a time to avoid the 6 minutes execution limit
   skipFileTypes: [".ics", ".ical", ".pkpass", ".vcf", ".vcard"], // Additional file types to skip (e.g., calendar invitations, etc.)
+  invoiceDetection: "gemini", // AI to use for invoice detection: "gemini", "openai", or false to disable
+  invoicesFolderName: "aaa_Facturas", // Name of the special folder for invoices in Google Drive shared folder
+
+  // AI configuration for invoice detection
+  // OpenAI settings (legacy)
+  openAIApiKey: "__OPENAI_API_KEY__", // Will be replaced during build
+  openAIApiKeyPropertyName: "openai_api_key", // Property name to store the API key
+  openAIModel: "gpt-3.5-turbo", // Model to use
+  openAIMaxTokens: 100, // Maximum tokens for response
+  openAITemperature: 0.05, // Very low temperature for more conservative responses (reduces false positives)
+
+  // Gemini settings (recommended)
+  geminiApiKey: "__GEMINI_API_KEY__", // Will be replaced during build
+  geminiApiKeyPropertyName: "gemini_api_key", // Property name to store the API key
+  geminiModel: "gemini-2.0-flash", // Model to use (updated to available model)
+  geminiMaxTokens: 10, // Maximum tokens for response (we only need a number)
+  geminiTemperature: 0.05, // Very low temperature for more conservative responses
+
+  // Shared AI settings
+  skipAIForDomains: ["newsletter.com", "marketing.com"], // Skip AI for these domains
+  onlyAnalyzePDFs: true, // Only send emails with PDF attachments to AI
+  strictPdfCheck: true, // Check both file extension and MIME type for PDFs
+  fallbackToKeywords: true, // Fall back to keyword detection if AI fails
+  aiConfidenceThreshold: 0.9, // High confidence threshold to reduce false positives (0.0-1.0)
+
+  // Historical pattern analysis for invoice detection
+  manuallyLabeledInvoicesLabel: "tickets/facturas", // Label used for manually identified invoices
+  useHistoricalPatterns: true, // Enable/disable historical pattern analysis
+  maxHistoricalEmails: 12, // Maximum number of historical emails to analyze
+
   //
   // You probably won't need to edit any other CONFIG variable below this line
   //
-  maxFileSize: 25 * 1024 * 1024, // 25MB max file size
-  skipSmallImages: true, // Skip small images like email signatures
-  smallImageMaxSize: 20 * 1024, // 20KB max size for images to skip
-  smallImageExtensions: [".jpg", ".jpeg", ".png", ".gif", ".bmp"], // Image extensions to check
   executionLockTime: 10, // Maximum time in minutes to wait for lock release
+  invoiceFileTypes: [".pdf"], // File types considered as invoices
+  invoiceKeywords: ["factura", "invoice", "receipt", "recibo", "pago"], // Keywords to search in subject/body
+  maxFileSize: 25 * 1024 * 1024, // 25MB max file size
   maxRetries: 3, // Maximum number of retries for operations
-  retryDelay: 1000, // Initial delay in milliseconds for retries
   maxRetryDelay: 10000, // Maximum delay in milliseconds for exponential backoff
+  retryDelay: 1000, // Initial delay in milliseconds for retries
+  skipSmallImages: true, // Skip small images like email signatures
+  smallImageExtensions: [".jpg", ".jpeg", ".png", ".gif", ".bmp"], // Image extensions to check
+  smallImageMaxSize: 20 * 1024, // 20KB max size for images to skip
   useEmailTimestamps: true, // Set to true to use email timestamps as file creation dates
   // List of MIME types that should always be saved as they are considered as real attachments
   attachmentTypesWhitelist: [
@@ -383,6 +417,1373 @@ function extractDomain(email) {
   const domainMatch = email.match(/@([\w.-]+)/);
   return domainMatch ? domainMatch[1] : "unknown";
 }
+
+//=============================================================================
+// HISTORICALPATTERNS - HISTORICAL PATTERN ANALYSIS
+//=============================================================================
+
+/**
+ * Gets historical invoice patterns from emails with the same sender
+ * that have been manually labeled with the configured label
+ *
+ * @param {string} senderEmail - Email address of the sender
+ * @returns {Object|null} Patterns detected in historical invoices, or null if disabled
+ */
+function getHistoricalInvoicePatterns(senderEmail) {
+  // Only proceed if feature is enabled and label is configured
+  if (!CONFIG.useHistoricalPatterns || !CONFIG.manuallyLabeledInvoicesLabel) {
+    return null;
+  }
+
+  try {
+    // Use the full sender email for more accurate internal Gmail search
+    const searchQuery = `from:(${senderEmail}) label:${CONFIG.manuallyLabeledInvoicesLabel}`;
+    const threads = GmailApp.search(searchQuery, 0, CONFIG.maxHistoricalEmails);
+
+    logWithUser(
+      `Found ${threads.length} historical emails from ${senderEmail} with label "${CONFIG.manuallyLabeledInvoicesLabel}"`,
+      "INFO"
+    );
+
+    if (threads.length === 0) {
+      return null;
+    }
+
+    // Collect metadata from these historical invoices
+    const subjects = [];
+    const dates = [];
+
+    for (const thread of threads) {
+      const messages = thread.getMessages();
+      if (messages.length > 0) {
+        const message = messages[0]; // Get the first message in each thread
+        subjects.push(message.getSubject());
+        dates.push(message.getDate());
+      }
+    }
+
+    // Extract patterns
+    const patterns = {
+      count: threads.length,
+      subjectPatterns: extractSubjectPatterns(subjects),
+      datePatterns: extractDatePatterns(dates),
+      // For internal use only (not sent to AI)
+      rawSubjects: subjects,
+      rawDates: dates.map((d) => d.toISOString()),
+    };
+
+    return patterns;
+  } catch (error) {
+    logWithUser(
+      `Error getting historical invoice patterns: ${error.message}`,
+      "ERROR"
+    );
+    return null;
+  }
+}
+
+/**
+ * Extracts patterns from email subjects
+ *
+ * @param {string[]} subjects - Array of email subjects
+ * @returns {Object} Patterns found in subjects
+ */
+function extractSubjectPatterns(subjects) {
+  if (!subjects || subjects.length === 0) {
+    return {};
+  }
+
+  try {
+    // Find common prefixes
+    let commonPrefix = subjects[0];
+    for (let i = 1; i < subjects.length; i++) {
+      let j = 0;
+      while (
+        j < commonPrefix.length &&
+        j < subjects[i].length &&
+        commonPrefix.charAt(j) === subjects[i].charAt(j)
+      ) {
+        j++;
+      }
+      commonPrefix = commonPrefix.substring(0, j);
+    }
+
+    // Find common suffixes
+    let commonSuffix = subjects[0];
+    for (let i = 1; i < subjects.length; i++) {
+      let j = 0;
+      while (
+        j < commonSuffix.length &&
+        j < subjects[i].length &&
+        commonSuffix.charAt(commonSuffix.length - 1 - j) ===
+          subjects[i].charAt(subjects[i].length - 1 - j)
+      ) {
+        j++;
+      }
+      commonSuffix = commonSuffix.substring(commonSuffix.length - j);
+    }
+
+    // Check for invoice keywords
+    const containsInvoiceTerms = subjects.some((subject) =>
+      CONFIG.invoiceKeywords.some((keyword) =>
+        subject.toLowerCase().includes(keyword.toLowerCase())
+      )
+    );
+
+    // Check for numeric patterns (like invoice numbers)
+    const numericPatterns = [];
+    const numericRegex = /\d+/g;
+
+    subjects.forEach((subject) => {
+      const matches = subject.match(numericRegex);
+      if (matches) {
+        numericPatterns.push(...matches);
+      }
+    });
+
+    return {
+      commonPrefix: commonPrefix.length > 3 ? commonPrefix.trim() : "",
+      commonSuffix: commonSuffix.length > 3 ? commonSuffix.trim() : "",
+      containsInvoiceTerms: containsInvoiceTerms,
+      hasNumericPatterns: numericPatterns.length > 0,
+    };
+  } catch (error) {
+    logWithUser(`Error extracting subject patterns: ${error.message}`, "ERROR");
+    return {};
+  }
+}
+
+/**
+ * Extracts patterns from email dates
+ *
+ * @param {Date[]} dates - Array of email dates
+ * @returns {Object} Patterns found in dates
+ */
+function extractDatePatterns(dates) {
+  if (!dates || dates.length < 2) {
+    return { frequency: "unknown" };
+  }
+
+  try {
+    // Sort dates chronologically
+    dates.sort((a, b) => a - b);
+
+    // Calculate intervals between dates in days
+    const intervals = [];
+    for (let i = 1; i < dates.length; i++) {
+      const diffTime = Math.abs(dates[i] - dates[i - 1]);
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      intervals.push(diffDays);
+    }
+
+    // Analyze frequency
+    const avgInterval =
+      intervals.reduce((sum, days) => sum + days, 0) / intervals.length;
+
+    let frequency = "irregular";
+
+    if (avgInterval >= 25 && avgInterval <= 35) {
+      frequency = "monthly";
+    } else if (avgInterval >= 85 && avgInterval <= 95) {
+      frequency = "quarterly";
+    } else if (avgInterval >= 175 && avgInterval <= 190) {
+      frequency = "biannual";
+    } else if (avgInterval >= 350 && avgInterval <= 380) {
+      frequency = "annual";
+    } else if (avgInterval >= 13 && avgInterval <= 16) {
+      frequency = "biweekly";
+    } else if (avgInterval >= 6 && avgInterval <= 8) {
+      frequency = "weekly";
+    }
+
+    // Check if dates fall on same day of month
+    const daysOfMonth = dates.map((d) => d.getDate());
+    const uniqueDaysOfMonth = [...new Set(daysOfMonth)];
+    const sameDayOfMonth = uniqueDaysOfMonth.length === 1;
+
+    return {
+      frequency: frequency,
+      averageIntervalDays: Math.round(avgInterval),
+      sameDayOfMonth: sameDayOfMonth,
+      dayOfMonth: sameDayOfMonth ? daysOfMonth[0] : null,
+    };
+  } catch (error) {
+    logWithUser(`Error extracting date patterns: ${error.message}`, "ERROR");
+    return { frequency: "unknown" };
+  }
+}
+
+/**
+ * Formats historical patterns into a human-readable description
+ * for inclusion in AI prompts
+ *
+ * @param {Object} patterns - The patterns object from getHistoricalInvoicePatterns
+ * @returns {string} Human-readable description of patterns
+ */
+function formatHistoricalPatternsForPrompt(patterns) {
+  if (!patterns || patterns.count === 0) {
+    return "";
+  }
+
+  try {
+    let description = `\nHistorical context: The sender domain has ${patterns.count} previous emails that were manually labeled as invoices.\n\n`;
+
+    // Subject patterns
+    if (patterns.subjectPatterns) {
+      description += "Subject patterns:\n";
+
+      if (patterns.subjectPatterns.commonPrefix) {
+        description += `- Subjects often start with: "${patterns.subjectPatterns.commonPrefix}"\n`;
+      }
+
+      if (patterns.subjectPatterns.commonSuffix) {
+        description += `- Subjects often end with: "${patterns.subjectPatterns.commonSuffix}"\n`;
+      }
+
+      if (patterns.subjectPatterns.containsInvoiceTerms) {
+        description += "- Subjects typically contain invoice-related terms\n";
+      }
+
+      if (patterns.subjectPatterns.hasNumericPatterns) {
+        description +=
+          "- Subjects often contain numeric patterns (like invoice numbers)\n";
+      }
+    }
+
+    // Date patterns
+    if (patterns.datePatterns) {
+      description += "\nTiming patterns:\n";
+
+      if (
+        patterns.datePatterns.frequency !== "unknown" &&
+        patterns.datePatterns.frequency !== "irregular"
+      ) {
+        description += `- Emails are typically sent ${patterns.datePatterns.frequency}\n`;
+      }
+
+      if (patterns.datePatterns.sameDayOfMonth) {
+        description += `- Emails are typically sent on day ${patterns.datePatterns.dayOfMonth} of the month\n`;
+      }
+
+      if (patterns.datePatterns.frequency === "irregular") {
+        description += `- Average interval between emails: ${patterns.datePatterns.averageIntervalDays} days\n`;
+      }
+    }
+
+    return description;
+  } catch (error) {
+    logWithUser(
+      `Error formatting historical patterns: ${error.message}`,
+      "ERROR"
+    );
+    return "";
+  }
+}
+
+// Make functions available to other modules
+var HistoricalPatterns = {
+  getHistoricalInvoicePatterns: getHistoricalInvoicePatterns,
+  formatHistoricalPatternsForPrompt: formatHistoricalPatternsForPrompt,
+};
+
+//=============================================================================
+// OPENAIDETECTION - OPENAI DETECTION
+//=============================================================================
+
+/**
+ * Makes an API call to OpenAI
+ *
+ * @param {string} content - The content to analyze
+ * @param {Object} options - Additional options for the API call
+ * @returns {Object} The API response
+ */
+function callOpenAIAPI(content, options = {}) {
+  try {
+    // Get the API key
+    const apiKey = getOpenAIApiKey();
+    if (!apiKey) {
+      throw new Error("OpenAI API key not found");
+    }
+
+    // Default options
+    const defaultOptions = {
+      model: CONFIG.openAIModel,
+      temperature: CONFIG.openAITemperature,
+      max_tokens: CONFIG.openAIMaxTokens,
+    };
+
+    // Merge default options with provided options
+    const finalOptions = { ...defaultOptions, ...options };
+
+    // Prepare the request payload
+    const payload = {
+      model: finalOptions.model,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an assistant that analyzes emails to determine if they contain invoices or bills. Be very precise and conservative in your analysis - only respond with 'yes' if you are highly confident the email is specifically about an invoice, bill, or receipt that requires payment.\n\nCheck the content in both English and Spanish languages.\n\nAn invoice typically contains:\n- A clear request for payment\n- An invoice number or reference\n- A specific amount to be paid\n- Payment instructions or terms\n\nJust mentioning words like 'invoice', 'bill', 'receipt', 'factura', 'recibo', or 'pago' is NOT enough to classify as an invoice. The email must be specifically about a payment document.\n\nRespond with 'yes' ONLY if the email is clearly about an actual invoice or bill. Otherwise, respond with 'no'.",
+        },
+        {
+          role: "user",
+          content: content,
+        },
+      ],
+      temperature: finalOptions.temperature,
+      max_tokens: finalOptions.max_tokens,
+    };
+
+    // Make the API request
+    const response = UrlFetchApp.fetch(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        method: "post",
+        headers: {
+          Authorization: "Bearer " + apiKey,
+          "Content-Type": "application/json",
+        },
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true,
+      }
+    );
+
+    // Parse and return the response
+    const responseData = JSON.parse(response.getContentText());
+
+    // Check for errors in the response
+    if (response.getResponseCode() !== 200) {
+      throw new Error(
+        `API Error: ${responseData.error?.message || "Unknown error"}`
+      );
+    }
+
+    return responseData;
+  } catch (error) {
+    logWithUser(`OpenAI API call failed: ${error.message}`, "ERROR");
+    throw error;
+  }
+}
+
+/**
+ * Analyzes an email to determine if it contains an invoice
+ *
+ * @param {GmailMessage} message - The Gmail message to analyze
+ * @returns {boolean} True if the message likely contains an invoice
+ */
+function analyzeEmail(message) {
+  try {
+    // Get the content to analyze
+    const content = getTextContentToAnalyze(message);
+
+    // Format the prompt
+    const formattedContent = formatPrompt(content);
+
+    // Call the OpenAI API
+    const response = callOpenAIAPI(formattedContent);
+
+    // Parse the response
+    return parseResponse(response);
+  } catch (error) {
+    logWithUser(`Email analysis failed: ${error.message}`, "ERROR");
+    throw error;
+  }
+}
+
+/**
+ * Main function to determine if a message contains an invoice using OpenAI
+ *
+ * @param {GmailMessage} message - The Gmail message to analyze
+ * @returns {boolean} True if the message likely contains an invoice
+ */
+function isInvoiceWithOpenAI(message) {
+  try {
+    // Check if OpenAI is enabled
+    if (CONFIG.invoiceDetection !== "openai") {
+      logWithUser(
+        "OpenAI invoice detection is disabled in configuration",
+        "INFO"
+      );
+      return false;
+    }
+
+    // Log the message subject for debugging
+    const subject = message.getSubject() || "(no subject)";
+    logWithUser(
+      `Analyzing message with subject: "${subject}" using OpenAI`,
+      "INFO"
+    );
+
+    // Check if sender domain should be skipped
+    const sender = message.getFrom();
+    const domain = extractDomain(sender);
+    logWithUser(`Message sender: ${sender}, domain: ${domain}`, "INFO");
+
+    if (CONFIG.skipAIForDomains && CONFIG.skipAIForDomains.includes(domain)) {
+      logWithUser(
+        `Skipping OpenAI for domain ${domain} (in skipAIForDomains list)`,
+        "INFO"
+      );
+      return false;
+    }
+
+    // Check for PDF attachments if configured
+    if (CONFIG.onlyAnalyzePDFs) {
+      const attachments = message.getAttachments();
+      logWithUser(`Message has ${attachments.length} attachments`, "INFO");
+
+      let hasPDF = false;
+      for (const attachment of attachments) {
+        const fileName = attachment.getName().toLowerCase();
+        const contentType = attachment.getContentType().toLowerCase();
+        logWithUser(
+          `Checking attachment: ${fileName}, type: ${contentType}`,
+          "INFO"
+        );
+
+        if (CONFIG.strictPdfCheck) {
+          if (fileName.endsWith(".pdf") && contentType.includes("pdf")) {
+            hasPDF = true;
+            logWithUser(`Found PDF attachment: ${fileName}`, "INFO");
+            break;
+          }
+        } else if (fileName.endsWith(".pdf")) {
+          hasPDF = true;
+          logWithUser(`Found PDF attachment: ${fileName}`, "INFO");
+          break;
+        }
+      }
+
+      if (!hasPDF) {
+        logWithUser(
+          `No PDF attachments found, skipping OpenAI analysis`,
+          "INFO"
+        );
+        return CONFIG.fallbackToKeywords ? checkKeywords(message) : false;
+      }
+    }
+
+    // Analyze the email
+    logWithUser(`Starting OpenAI analysis for message: "${subject}"`, "INFO");
+    const isInvoice = analyzeEmail(message);
+    logWithUser(`OpenAI invoice detection result: ${isInvoice}`, "INFO");
+
+    return isInvoice;
+  } catch (error) {
+    logWithUser(`OpenAI invoice detection failed: ${error.message}`, "ERROR");
+    // Return false on error, caller can decide to fall back to keywords
+    return false;
+  }
+}
+
+/**
+ * Extracts relevant text content from a Gmail message for analysis
+ *
+ * @param {GmailMessage} message - The Gmail message to extract content from
+ * @returns {Object} Object containing subject, body, and historical patterns
+ */
+function getTextContentToAnalyze(message) {
+  try {
+    const subject = message.getSubject() || "";
+    let body = "";
+
+    // Try to get plain text body
+    try {
+      body = message.getPlainBody() || "";
+
+      // Truncate body if it's too long (to save tokens)
+      if (body.length > 1500) {
+        body = body.substring(0, 1500) + "...";
+      }
+    } catch (e) {
+      logWithUser(`Could not get message body: ${e.message}`, "WARNING");
+    }
+
+    // Get historical patterns if enabled
+    let historicalPatterns = null;
+    if (CONFIG.useHistoricalPatterns && CONFIG.manuallyLabeledInvoicesLabel) {
+      historicalPatterns = HistoricalPatterns.getHistoricalInvoicePatterns(
+        message.getFrom()
+      );
+    }
+
+    return {
+      subject: subject,
+      body: body,
+      sender: message.getFrom() || "",
+      date: message.getDate().toISOString(),
+      historicalPatterns: historicalPatterns,
+    };
+  } catch (error) {
+    logWithUser(`Error extracting message content: ${error.message}`, "ERROR");
+    // Return minimal content on error
+    return {
+      subject: message.getSubject() || "",
+      body: "",
+      sender: message.getFrom() || "",
+      date: message.getDate().toISOString(),
+    };
+  }
+}
+
+/**
+ * Formats the email content into a prompt for the OpenAI API
+ *
+ * @param {Object} content - The email content to format
+ * @returns {string} Formatted prompt
+ */
+function formatPrompt(content) {
+  try {
+    // Get historical patterns if available
+    let historicalContext = "";
+    if (content.historicalPatterns && content.historicalPatterns.count > 0) {
+      historicalContext = HistoricalPatterns.formatHistoricalPatternsForPrompt(
+        content.historicalPatterns
+      );
+    }
+
+    return `
+Please analyze this email and determine if it contains an invoice or bill.
+Respond with only 'yes' or 'no'.
+${historicalContext}
+From: ${content.sender}
+Date: ${content.date}
+Subject: ${content.subject}
+
+${content.body}
+`;
+  } catch (error) {
+    logWithUser(`Error formatting prompt: ${error.message}`, "ERROR");
+    // Return a simplified prompt on error
+    return `Subject: ${content.subject}\n\nIs this an invoice or bill? Answer yes or no.`;
+  }
+}
+
+/**
+ * Parses the OpenAI API response to determine if the message contains an invoice
+ *
+ * @param {Object} response - The API response to parse
+ * @returns {boolean} True if the message likely contains an invoice
+ */
+function parseResponse(response) {
+  try {
+    // Extract the response text
+    const responseText = response.choices[0].message.content
+      .trim()
+      .toLowerCase();
+
+    // Log the raw response for debugging
+    logWithUser(`OpenAI raw response: "${responseText}"`, "INFO");
+
+    // Check if the response indicates an invoice
+    // We're looking for "yes" or variations like "yes, it is an invoice"
+    return responseText.includes("yes");
+  } catch (error) {
+    logWithUser(`Error parsing API response: ${error.message}`, "ERROR");
+    throw error;
+  }
+}
+
+/**
+ * Verifies if there is an API key available, using first the configuration and then
+ * the script properties as a backup
+ *
+ * @returns {string|null} The API key if found, null otherwise
+ */
+function getOpenAIApiKey() {
+  // First check if the key is in CONFIG and not the placeholder
+  if (CONFIG.openAIApiKey && CONFIG.openAIApiKey !== "__OPENAI_API_KEY__") {
+    return CONFIG.openAIApiKey;
+  }
+
+  // Then try to get it from script properties
+  try {
+    const apiKey = PropertiesService.getScriptProperties().getProperty(
+      CONFIG.openAIApiKeyPropertyName
+    );
+    return apiKey;
+  } catch (error) {
+    logWithUser(`Error retrieving API key: ${error.message}`, "ERROR");
+    return null;
+  }
+}
+
+/**
+ * Stores the OpenAI API key securely in Script Properties
+ *
+ * @param {string} apiKey - The OpenAI API key to store
+ * @returns {boolean} True if successful, false otherwise
+ */
+function storeOpenAIApiKey(apiKey) {
+  try {
+    PropertiesService.getScriptProperties().setProperty(
+      CONFIG.openAIApiKeyPropertyName,
+      apiKey
+    );
+    return true;
+  } catch (error) {
+    logWithUser(`Error storing API key: ${error.message}`, "ERROR");
+    return false;
+  }
+}
+
+/**
+ * Test function to verify OpenAI API connectivity
+ * This function can be run directly from the Apps Script editor
+ * to check if the configured API key is correct
+ */
+function testOpenAIConnection() {
+  try {
+    const testPrompt = "Is this a test?";
+    const response = callOpenAIAPI(testPrompt);
+
+    Logger.log(
+      `Successfully connected to OpenAI API. Response: ${JSON.stringify(
+        response
+      )}`
+    );
+    return {
+      success: true,
+      response: response,
+    };
+  } catch (e) {
+    Logger.log(`Error connecting to OpenAI API: ${e.message}`);
+    return {
+      success: false,
+      error: e.message,
+    };
+  }
+}
+
+// Make functions available to other modules
+var OpenAIDetection = {
+  isInvoiceWithOpenAI: isInvoiceWithOpenAI,
+  testOpenAIConnection: testOpenAIConnection,
+  storeOpenAIApiKey: storeOpenAIApiKey,
+};
+
+//=============================================================================
+// GEMINIDETECTION - GEMINI DETECTION
+//=============================================================================
+
+/**
+ * Makes an API call to Google Gemini
+ *
+ * @param {string} prompt - The prompt to send to Gemini
+ * @param {Object} options - Additional options for the API call
+ * @returns {Object} The API response
+ */
+function callGeminiAPI(prompt, options = {}) {
+  try {
+    // Get the API key
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) {
+      throw new Error("Gemini API key not found");
+    }
+
+    // Default options
+    const defaultOptions = {
+      model: CONFIG.geminiModel,
+      temperature: CONFIG.geminiTemperature,
+      maxOutputTokens: CONFIG.geminiMaxTokens,
+    };
+
+    // Merge default options with provided options
+    const finalOptions = { ...defaultOptions, ...options };
+
+    // Prepare the request payload
+    const payload = {
+      contents: [
+        {
+          parts: [{ text: prompt }],
+        },
+      ],
+      generationConfig: {
+        temperature: finalOptions.temperature,
+        maxOutputTokens: finalOptions.maxOutputTokens,
+      },
+    };
+
+    // Try v1 API first (newer version)
+    let url =
+      "https://generativelanguage.googleapis.com/v1/models/" +
+      finalOptions.model +
+      ":generateContent";
+
+    try {
+      // Make the API request to v1 endpoint
+      const response = UrlFetchApp.fetch(`${url}?key=${apiKey}`, {
+        method: "post",
+        contentType: "application/json",
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true,
+      });
+
+      // Parse the response
+      const responseData = JSON.parse(response.getContentText());
+
+      // Check for errors in the response
+      if (response.getResponseCode() !== 200) {
+        throw new Error(
+          `API Error: ${responseData.error?.message || "Unknown error"}`
+        );
+      }
+
+      // Extract the text response
+      const responseText = responseData.candidates[0].content.parts[0].text;
+      logWithUser("Successfully used Gemini API v1 endpoint", "INFO");
+      return responseText;
+    } catch (v1Error) {
+      // Log the error but don't throw yet
+      logWithUser(
+        `Gemini API v1 endpoint failed: ${v1Error.message}, trying v1beta...`,
+        "WARNING"
+      );
+
+      // Fall back to v1beta API
+      url =
+        "https://generativelanguage.googleapis.com/v1beta/models/" +
+        finalOptions.model +
+        ":generateContent";
+
+      // Make the API request to v1beta endpoint
+      const response = UrlFetchApp.fetch(`${url}?key=${apiKey}`, {
+        method: "post",
+        contentType: "application/json",
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true,
+      });
+
+      // Parse the response
+      const responseData = JSON.parse(response.getContentText());
+
+      // Check for errors in the response
+      if (response.getResponseCode() !== 200) {
+        throw new Error(
+          `API Error: ${responseData.error?.message || "Unknown error"}`
+        );
+      }
+
+      // Extract the text response
+      const responseText = responseData.candidates[0].content.parts[0].text;
+      logWithUser("Successfully used Gemini API v1beta endpoint", "INFO");
+      return responseText;
+    }
+  } catch (error) {
+    logWithUser(`Gemini API call failed: ${error.message}`, "ERROR");
+    throw error;
+  }
+}
+
+/**
+ * Extracts relevant keywords from email body without sending full content
+ *
+ * @param {string} body - The email body text
+ * @returns {string[]} Array of extracted keywords and patterns
+ */
+function extractKeywords(body) {
+  try {
+    // Extract only relevant terms without sending the full body
+    const relevantTerms = [];
+    CONFIG.invoiceKeywords.forEach((keyword) => {
+      if (body.toLowerCase().includes(keyword.toLowerCase())) {
+        relevantTerms.push(keyword);
+      }
+    });
+
+    // Look for numeric patterns that might be amounts or references
+    const amountPatterns =
+      body.match(/\$\s*\d+[.,]\d{2}|€\s*\d+[.,]\d{2}/g) || [];
+    const refPatterns = body.match(/ref\w*\s*:?\s*[A-Z0-9-]+/gi) || [];
+    const invoiceNumPatterns = body.match(/inv\w*\s*:?\s*[A-Z0-9-]+/gi) || [];
+
+    return [
+      ...relevantTerms,
+      ...amountPatterns,
+      ...refPatterns,
+      ...invoiceNumPatterns,
+    ];
+  } catch (error) {
+    logWithUser(`Error extracting keywords: ${error.message}`, "ERROR");
+    return [];
+  }
+}
+
+/**
+ * Extracts metadata from a Gmail message for AI analysis
+ * without sending the full content
+ *
+ * @param {GmailMessage} message - The Gmail message to extract metadata from
+ * @returns {Object} Metadata object with privacy-safe information
+ */
+function extractMetadata(message) {
+  try {
+    const subject = message.getSubject() || "";
+    const body = message.getPlainBody() || "";
+    const attachments = message.getAttachments() || [];
+
+    // Get attachment info
+    const attachmentInfo = attachments.map((attachment) => {
+      return {
+        name: attachment.getName(),
+        extension: attachment.getName().split(".").pop().toLowerCase(),
+        contentType: attachment.getContentType(),
+        size: attachment.getSize(),
+      };
+    });
+
+    // Get historical patterns if enabled
+    let historicalPatterns = null;
+    if (CONFIG.useHistoricalPatterns && CONFIG.manuallyLabeledInvoicesLabel) {
+      historicalPatterns = HistoricalPatterns.getHistoricalInvoicePatterns(
+        message.getFrom()
+      );
+    }
+
+    // Get sender information
+    const sender = message.getFrom() || "";
+    const senderDomain = extractDomain(sender);
+
+    // Anonymize sender email (only keep domain)
+    const anonymizedSender = `user@${senderDomain}`;
+
+    // Create metadata object with only necessary information
+    // Avoid sending any personally identifiable information
+    return {
+      subject: subject,
+      senderDomain: senderDomain, // Only send domain, not full email
+      date: message.getDate().toISOString(),
+      hasAttachments: attachments.length > 0,
+      attachmentTypes: attachmentInfo.map((a) => a.extension),
+      attachmentContentTypes: attachmentInfo.map((a) => a.contentType),
+      keywordsFound: extractKeywords(body),
+      historicalPatterns: historicalPatterns,
+    };
+  } catch (error) {
+    logWithUser(`Error extracting message metadata: ${error.message}`, "ERROR");
+    // Return minimal metadata on error, still ensuring privacy
+    const errorSenderDomain = extractDomain(message.getFrom() || "");
+    return {
+      subject: message.getSubject() || "",
+      senderDomain: errorSenderDomain, // Only include domain, not full email
+      hasAttachments: false,
+      attachmentTypes: [],
+      attachmentContentTypes: [],
+      keywordsFound: [],
+    };
+  }
+}
+
+/**
+ * Formats the metadata into a prompt for the Gemini API
+ *
+ * @param {Object} metadata - The email metadata to format
+ * @returns {string} Formatted prompt
+ */
+function formatPrompt(metadata) {
+  try {
+    // Get historical patterns if available
+    let historicalContext = "";
+    if (metadata.historicalPatterns && metadata.historicalPatterns.count > 0) {
+      historicalContext = HistoricalPatterns.formatHistoricalPatternsForPrompt(
+        metadata.historicalPatterns
+      );
+    }
+
+    return `
+Based on these email metadata, assess the likelihood that this contains an invoice.
+You don't have access to the full content for privacy reasons.
+${historicalContext}
+Metadata: ${JSON.stringify(metadata, null, 2)}
+
+An invoice typically contains:
+- A clear request for payment
+- An invoice number or reference
+- A specific amount to be paid
+- Payment instructions or terms
+
+Just mentioning words like 'invoice', 'bill', 'receipt', etc. is NOT enough to classify as an invoice.
+The email must be specifically about a payment document.
+
+On a scale from 0.0 to 1.0, where:
+- 0.0 means definitely NOT an invoice
+- 1.0 means definitely IS an invoice
+
+Provide ONLY a single number between 0.0 and 1.0 representing your confidence.
+Example responses: "0.2", "0.85", "0.99"
+`;
+  } catch (error) {
+    logWithUser(`Error formatting prompt: ${error.message}`, "ERROR");
+    // Return a simplified prompt on error
+    return `Based on this subject: "${metadata.subject}", on a scale from 0.0 to 1.0, what's the likelihood this is an invoice? Respond with only a number.`;
+  }
+}
+
+/**
+ * Parses the Gemini API response to extract confidence score
+ *
+ * @param {string} response - The API response to parse
+ * @returns {number} Confidence score between 0 and 1
+ */
+function parseGeminiResponse(response) {
+  try {
+    // Extract the text response and clean it
+    const responseText = response.trim();
+
+    // Try to extract a number from the response
+    const confidenceMatch = responseText.match(/(\d+\.\d+|\d+)/);
+
+    if (confidenceMatch) {
+      const confidence = parseFloat(confidenceMatch[0]);
+
+      // Validate that it's a number between 0 and 1
+      if (!isNaN(confidence) && confidence >= 0 && confidence <= 1) {
+        logWithUser(`Gemini confidence score: ${confidence}`, "INFO");
+        return confidence;
+      }
+    }
+
+    // If we couldn't extract a valid confidence score, log warning and return 0
+    logWithUser(
+      `Could not extract valid confidence score from response: "${responseText}"`,
+      "WARNING"
+    );
+    return 0;
+  } catch (error) {
+    logWithUser(`Error parsing Gemini response: ${error.message}`, "ERROR");
+    return 0;
+  }
+}
+
+/**
+ * Analyzes an email to determine if it contains an invoice
+ *
+ * @param {GmailMessage} message - The Gmail message to analyze
+ * @returns {number} Confidence score between 0 and 1
+ */
+function analyzeEmail(message) {
+  try {
+    // Extract metadata (not full content)
+    const metadata = extractMetadata(message);
+
+    // Format the prompt
+    const formattedPrompt = formatPrompt(metadata);
+
+    // Log the formatted prompt
+    logWithUser(
+      `Formatted prompt with metadata for Gemini: ${formattedPrompt}`,
+      "DEBUG"
+    );
+
+    // Call the Gemini API
+    const response = callGeminiAPI(formattedPrompt);
+
+    // Parse the response to get confidence score
+    return parseGeminiResponse(response);
+  } catch (error) {
+    logWithUser(`Email analysis failed: ${error.message}`, "ERROR");
+    return 0; // Return 0 confidence on error
+  }
+}
+
+/**
+ * Main function to determine if a message contains an invoice using Gemini
+ *
+ * @param {GmailMessage} message - The Gmail message to analyze
+ * @returns {boolean} True if the message likely contains an invoice
+ */
+function isInvoiceWithGemini(message) {
+  try {
+    // Check if Gemini is enabled
+    if (CONFIG.invoiceDetection !== "gemini") {
+      logWithUser(
+        "Gemini invoice detection is disabled in configuration",
+        "INFO"
+      );
+      return false;
+    }
+
+    // Log the message subject for debugging
+    const subject = message.getSubject() || "(no subject)";
+    logWithUser(
+      `Analyzing message with subject: "${subject}" using Gemini`,
+      "INFO"
+    );
+
+    // Check if sender domain should be skipped
+    const sender = message.getFrom();
+    const domain = extractDomain(sender);
+
+    // Log only the domain, not the full email address
+    logWithUser(`Message domain: ${domain}`, "INFO");
+
+    if (CONFIG.skipAIForDomains && CONFIG.skipAIForDomains.includes(domain)) {
+      logWithUser(
+        `Skipping Gemini for domain ${domain} (in skipAIForDomains list)`,
+        "INFO"
+      );
+      return false;
+    }
+
+    // Check for PDF attachments if configured
+    if (CONFIG.onlyAnalyzePDFs) {
+      const attachments = message.getAttachments();
+      logWithUser(`Message has ${attachments.length} attachments`, "INFO");
+
+      let hasPDF = false;
+      for (const attachment of attachments) {
+        const fileName = attachment.getName().toLowerCase();
+        const contentType = attachment.getContentType().toLowerCase();
+        logWithUser(
+          `Checking attachment: ${fileName}, type: ${contentType}`,
+          "INFO"
+        );
+
+        if (CONFIG.strictPdfCheck) {
+          if (fileName.endsWith(".pdf") && contentType.includes("pdf")) {
+            hasPDF = true;
+            logWithUser(`Found PDF attachment: ${fileName}`, "INFO");
+            break;
+          }
+        } else if (fileName.endsWith(".pdf")) {
+          hasPDF = true;
+          logWithUser(`Found PDF attachment: ${fileName}`, "INFO");
+          break;
+        }
+      }
+
+      if (!hasPDF) {
+        logWithUser(
+          `No PDF attachments found, skipping Gemini analysis`,
+          "INFO"
+        );
+        return CONFIG.fallbackToKeywords ? checkKeywords(message) : false;
+      }
+    }
+
+    // Analyze the email to get confidence score
+    logWithUser(`Starting Gemini analysis for message: "${subject}"`, "INFO");
+    const confidence = analyzeEmail(message);
+
+    // Compare with threshold
+    const isInvoice = confidence >= CONFIG.aiConfidenceThreshold;
+    logWithUser(
+      `Gemini invoice detection result: ${isInvoice} (confidence: ${confidence}, threshold: ${CONFIG.aiConfidenceThreshold})`,
+      "INFO"
+    );
+
+    return isInvoice;
+  } catch (error) {
+    logWithUser(`Gemini invoice detection failed: ${error.message}`, "ERROR");
+    // Return false on error, caller can decide to fall back to keywords
+    return false;
+  }
+}
+
+/**
+ * Verifies if there is an API key available, using first the configuration and then
+ * the script properties as a backup
+ *
+ * @returns {string|null} The API key if found, null otherwise
+ */
+function getGeminiApiKey() {
+  // First check if the key is in CONFIG and not the placeholder
+  if (CONFIG.geminiApiKey && CONFIG.geminiApiKey !== "__GEMINI_API_KEY__") {
+    return CONFIG.geminiApiKey;
+  }
+
+  // Then try to get it from script properties
+  try {
+    const apiKey = PropertiesService.getScriptProperties().getProperty(
+      CONFIG.geminiApiKeyPropertyName
+    );
+    return apiKey;
+  } catch (error) {
+    logWithUser(`Error retrieving Gemini API key: ${error.message}`, "ERROR");
+    return null;
+  }
+}
+
+/**
+ * Stores the Gemini API key securely in Script Properties
+ *
+ * @param {string} apiKey - The Gemini API key to store
+ * @returns {boolean} True if successful, false otherwise
+ */
+function storeGeminiApiKey(apiKey) {
+  try {
+    PropertiesService.getScriptProperties().setProperty(
+      CONFIG.geminiApiKeyPropertyName,
+      apiKey
+    );
+    return true;
+  } catch (error) {
+    logWithUser(`Error storing Gemini API key: ${error.message}`, "ERROR");
+    return false;
+  }
+}
+
+/**
+ * Test function to verify Gemini API connectivity
+ * This function can be run directly from the Apps Script editor
+ * to check if the configured API key is correct
+ */
+function testGeminiConnection() {
+  try {
+    const testPrompt =
+      "On a scale from 0.0 to 1.0, how likely is this a test? Respond with only a number.";
+    const response = callGeminiAPI(testPrompt);
+
+    Logger.log(`Successfully connected to Gemini API. Response: ${response}`);
+    return {
+      success: true,
+      response: response,
+    };
+  } catch (e) {
+    Logger.log(`Error connecting to Gemini API: ${e.message}`);
+    return {
+      success: false,
+      error: e.message,
+    };
+  }
+}
+
+// Make functions available to other modules
+var GeminiDetection = {
+  isInvoiceWithGemini: isInvoiceWithGemini,
+  testGeminiConnection: testGeminiConnection,
+  storeGeminiApiKey: storeGeminiApiKey,
+};
+
+//=============================================================================
+// VERIFYAPIKEYS - API KEY VERIFICATION
+//=============================================================================
+
+/**
+ * Verifies if the Gemini API key is valid and working
+ *
+ * @returns {Object} Object with success status, details, and API information
+ */
+function verifyGeminiAPIKey() {
+  try {
+    logWithUser("Starting Gemini API key verification...", "INFO");
+
+    // Step 1: Check if the API key exists in configuration or script properties
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) {
+      return {
+        success: false,
+        message:
+          "Gemini API key not found in configuration or script properties",
+        details: {
+          configValue:
+            CONFIG.geminiApiKey === "__GEMINI_API_KEY__"
+              ? "Not set (placeholder)"
+              : "Set in CONFIG",
+          scriptPropertyName: CONFIG.geminiApiKeyPropertyName,
+          scriptPropertyValue: "Not available (null)",
+        },
+      };
+    }
+
+    // Step 2: Mask the API key for logging (show only first 4 and last 4 characters)
+    const maskedKey = maskAPIKey(apiKey);
+    logWithUser(`Found Gemini API key: ${maskedKey}`, "INFO");
+
+    // Step 3: Test the API connection
+    logWithUser("Testing Gemini API connection...", "INFO");
+    const testResult = GeminiDetection.testGeminiConnection();
+
+    if (testResult.success) {
+      return {
+        success: true,
+        message: "Gemini API key is valid and working correctly",
+        details: {
+          apiKeySource:
+            CONFIG.geminiApiKey !== "__GEMINI_API_KEY__"
+              ? "CONFIG"
+              : "Script Properties",
+          apiKeyLength: apiKey.length,
+          maskedKey: maskedKey,
+          model: CONFIG.geminiModel,
+          testResponse: testResult.response,
+        },
+      };
+    } else {
+      return {
+        success: false,
+        message: "Gemini API key validation failed",
+        details: {
+          apiKeySource:
+            CONFIG.geminiApiKey !== "__GEMINI_API_KEY__"
+              ? "CONFIG"
+              : "Script Properties",
+          apiKeyLength: apiKey.length,
+          maskedKey: maskedKey,
+          model: CONFIG.geminiModel,
+          error: testResult.error,
+        },
+      };
+    }
+  } catch (error) {
+    logWithUser(`Error verifying Gemini API key: ${error.message}`, "ERROR");
+    return {
+      success: false,
+      message: `Error verifying Gemini API key: ${error.message}`,
+      details: {
+        error: error.message,
+        stack: error.stack,
+      },
+    };
+  }
+}
+
+/**
+ * Verifies if the OpenAI API key is valid and working
+ *
+ * @returns {Object} Object with success status, details, and API information
+ */
+function verifyOpenAIAPIKey() {
+  try {
+    logWithUser("Starting OpenAI API key verification...", "INFO");
+
+    // Step 1: Check if the API key exists in configuration or script properties
+    const apiKey = getOpenAIApiKey();
+    if (!apiKey) {
+      return {
+        success: false,
+        message:
+          "OpenAI API key not found in configuration or script properties",
+        details: {
+          configValue:
+            CONFIG.openAIApiKey === "__OPENAI_API_KEY__"
+              ? "Not set (placeholder)"
+              : "Set in CONFIG",
+          scriptPropertyName: CONFIG.openAIApiKeyPropertyName,
+          scriptPropertyValue: "Not available (null)",
+        },
+      };
+    }
+
+    // Step 2: Mask the API key for logging (show only first 4 and last 4 characters)
+    const maskedKey = maskAPIKey(apiKey);
+    logWithUser(`Found OpenAI API key: ${maskedKey}`, "INFO");
+
+    // Step 3: Test the API connection
+    logWithUser("Testing OpenAI API connection...", "INFO");
+    const testResult = OpenAIDetection.testOpenAIConnection();
+
+    if (testResult.success) {
+      return {
+        success: true,
+        message: "OpenAI API key is valid and working correctly",
+        details: {
+          apiKeySource:
+            CONFIG.openAIApiKey !== "__OPENAI_API_KEY__"
+              ? "CONFIG"
+              : "Script Properties",
+          apiKeyLength: apiKey.length,
+          maskedKey: maskedKey,
+          model: CONFIG.openAIModel,
+          testResponse: "Response available (not shown for brevity)",
+        },
+      };
+    } else {
+      return {
+        success: false,
+        message: "OpenAI API key validation failed",
+        details: {
+          apiKeySource:
+            CONFIG.openAIApiKey !== "__OPENAI_API_KEY__"
+              ? "CONFIG"
+              : "Script Properties",
+          apiKeyLength: apiKey.length,
+          maskedKey: maskedKey,
+          model: CONFIG.openAIModel,
+          error: testResult.error,
+        },
+      };
+    }
+  } catch (error) {
+    logWithUser(`Error verifying OpenAI API key: ${error.message}`, "ERROR");
+    return {
+      success: false,
+      message: `Error verifying OpenAI API key: ${error.message}`,
+      details: {
+        error: error.message,
+        stack: error.stack,
+      },
+    };
+  }
+}
+
+/**
+ * Verifies both Gemini and OpenAI API keys
+ *
+ * @returns {Object} Object with verification results for both APIs
+ */
+function verifyAllAPIKeys() {
+  const results = {
+    gemini: verifyGeminiAPIKey(),
+    openai: verifyOpenAIAPIKey(),
+    timestamp: new Date().toISOString(),
+    config: {
+      invoiceDetection: CONFIG.invoiceDetection,
+      geminiModel: CONFIG.geminiModel,
+      openAIModel: CONFIG.openAIModel,
+    },
+  };
+
+  // Log a summary of the results
+  if (results.gemini.success && results.openai.success) {
+    logWithUser(
+      "✅ Both Gemini and OpenAI API keys are valid and working",
+      "INFO"
+    );
+  } else if (results.gemini.success) {
+    logWithUser(
+      "⚠️ Gemini API key is valid, but OpenAI API key validation failed",
+      "WARNING"
+    );
+  } else if (results.openai.success) {
+    logWithUser(
+      "⚠️ OpenAI API key is valid, but Gemini API key validation failed",
+      "WARNING"
+    );
+  } else {
+    logWithUser(
+      "❌ Both Gemini and OpenAI API key validations failed",
+      "ERROR"
+    );
+  }
+
+  return results;
+}
+
+/**
+ * Helper function to mask an API key for safe logging
+ * Shows only the first 4 and last 4 characters, with the rest masked
+ *
+ * @param {string} apiKey - The API key to mask
+ * @returns {string} The masked API key
+ */
+function maskAPIKey(apiKey) {
+  if (!apiKey || apiKey.length < 8) {
+    return "Invalid key (too short)";
+  }
+
+  const firstFour = apiKey.substring(0, 4);
+  const lastFour = apiKey.substring(apiKey.length - 4);
+  const maskedPortion = "*".repeat(Math.min(apiKey.length - 8, 10));
+
+  return `${firstFour}${maskedPortion}${lastFour} (${apiKey.length} chars)`;
+}
+
+// Make functions available to other modules
+var VerifyAPIKeys = {
+  verifyGeminiAPIKey: verifyGeminiAPIKey,
+  verifyOpenAIAPIKey: verifyOpenAIAPIKey,
+  verifyAllAPIKeys: verifyAllAPIKeys,
+};
 
 //=============================================================================
 // USERMANAGEMENT - USER MANAGEMENT
@@ -1001,6 +2402,121 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
 //=============================================================================
 
 /**
+ * Get or create the special folder for invoices
+ *
+ * This function creates or retrieves a special folder for storing invoices,
+ * with subfolders for each sender's domain. It uses the same locking mechanism as
+ * getDomainFolder to prevent race conditions.
+ *
+ * @param {DriveFolder} mainFolder - The main folder to create the invoices folder in
+ * @param {string} domain - The sender's domain to create a subfolder for (optional)
+ * @returns {DriveFolder} The invoices folder or domain subfolder
+ *
+ * The function follows this flow:
+ * 1. Gets the folder name from CONFIG.invoicesFolderName
+ * 2. Acquires a lock to prevent race conditions during folder creation
+ * 3. Checks if the invoices folder already exists
+ * 4. If the folder exists, returns it immediately if no domain is specified
+ * 5. If domain is specified, gets or creates a subfolder for that domain
+ * 6. If any errors occur, falls back to using the main folder
+ */
+function getInvoicesFolder(mainFolder, domain = null) {
+  try {
+    const folderName = CONFIG.invoicesFolderName;
+
+    // Use a lock to prevent race conditions when creating folders
+    const lock = LockService.getScriptLock();
+    try {
+      lock.tryLock(10000); // Wait up to 10 seconds for the lock
+
+      // First check if the main invoices folder exists
+      const folders = withRetry(
+        () => mainFolder.getFoldersByName(folderName),
+        "getting invoices folder"
+      );
+
+      let invoicesFolder;
+      if (folders.hasNext()) {
+        invoicesFolder = folders.next();
+        logWithUser(`Using existing invoices folder: ${folderName}`);
+      } else {
+        // Double-check that the folder still doesn't exist
+        // This helps in cases where another execution created it just now
+        const doubleCheckFolders = withRetry(
+          () => mainFolder.getFoldersByName(folderName),
+          "double-checking invoices folder"
+        );
+
+        if (doubleCheckFolders.hasNext()) {
+          invoicesFolder = doubleCheckFolders.next();
+          logWithUser(
+            `Using existing invoices folder (after double-check): ${folderName}`
+          );
+        } else {
+          // If we're still here, we can safely create the folder
+          invoicesFolder = withRetry(
+            () => mainFolder.createFolder(folderName),
+            "creating invoices folder"
+          );
+          logWithUser(`Created new invoices folder: ${folderName}`);
+        }
+      }
+
+      // If no domain is specified, return the main invoices folder
+      if (!domain) {
+        return invoicesFolder;
+      }
+
+      // If domain is specified, get or create a subfolder for that domain
+      const domainFolders = withRetry(
+        () => invoicesFolder.getFoldersByName(domain),
+        `getting domain subfolder in invoices folder: ${domain}`
+      );
+
+      if (domainFolders.hasNext()) {
+        const domainFolder = domainFolders.next();
+        logWithUser(`Using existing domain subfolder in invoices: ${domain}`);
+        return domainFolder;
+      } else {
+        // Double-check for the domain subfolder
+        const doubleCheckDomainFolders = withRetry(
+          () => invoicesFolder.getFoldersByName(domain),
+          `double-checking domain subfolder in invoices: ${domain}`
+        );
+
+        if (doubleCheckDomainFolders.hasNext()) {
+          const domainFolder = doubleCheckDomainFolders.next();
+          logWithUser(
+            `Using existing domain subfolder in invoices (after double-check): ${domain}`
+          );
+          return domainFolder;
+        }
+
+        // Create the domain subfolder
+        const newDomainFolder = withRetry(
+          () => invoicesFolder.createFolder(domain),
+          `creating domain subfolder in invoices: ${domain}`
+        );
+        logWithUser(`Created new domain subfolder in invoices: ${domain}`);
+        return newDomainFolder;
+      }
+    } finally {
+      // Always release the lock
+      if (lock.hasLock()) {
+        lock.releaseLock();
+      }
+    }
+  } catch (error) {
+    logWithUser(
+      `Error getting invoices folder: ${error.message}. Using main folder as fallback.`,
+      "ERROR"
+    );
+    // Ultimate fallback: return the main folder
+    return mainFolder;
+  }
+}
+
+/**
  * Get or create a folder for the sender's domain
  *
  * Why it uses locks:
@@ -1399,6 +2915,211 @@ function saveAttachmentLegacy(attachment, folder, messageDate) {
 //=============================================================================
 
 /**
+ * Determines if a message appears to contain an invoice using AI or keywords
+ *
+ * @param {GmailMessage} message - The Gmail message to analyze
+ * @returns {boolean} True if the message likely contains an invoice
+ */
+function isInvoiceMessage(message) {
+  // Early return if invoice detection is disabled
+  if (CONFIG.invoiceDetection === false) return false;
+
+  try {
+    // Check if any AI detection is enabled
+    if (
+      CONFIG.invoiceDetection === "gemini" ||
+      CONFIG.invoiceDetection === "openai"
+    ) {
+      // Check if message has attachments and if any are PDFs (with stricter checking)
+      if (CONFIG.onlyAnalyzePDFs) {
+        const attachments = message.getAttachments();
+        let hasPDF = false;
+
+        for (const attachment of attachments) {
+          const fileName = attachment.getName().toLowerCase();
+          const contentType = attachment.getContentType().toLowerCase();
+
+          // Strict PDF check - both extension and MIME type
+          if (CONFIG.strictPdfCheck) {
+            if (fileName.endsWith(".pdf") && contentType.includes("pdf")) {
+              hasPDF = true;
+              break;
+            }
+          } else {
+            // Legacy check - just extension
+            if (fileName.endsWith(".pdf")) {
+              hasPDF = true;
+              break;
+            }
+          }
+        }
+
+        // Skip AI if there are no PDF attachments
+        if (!hasPDF) {
+          logWithUser("No PDF attachments found, skipping AI analysis", "INFO");
+          return CONFIG.fallbackToKeywords ? checkKeywords(message) : false;
+        }
+      }
+
+      // Check if sender domain should be skipped
+      const sender = message.getFrom();
+      const domain = extractDomain(sender);
+      if (CONFIG.skipAIForDomains && CONFIG.skipAIForDomains.includes(domain)) {
+        logWithUser(`Skipping AI for domain ${domain}, using keywords`, "INFO");
+        return checkKeywords(message);
+      }
+
+      // Try Gemini detection first if enabled
+      if (CONFIG.invoiceDetection === "gemini") {
+        try {
+          const isInvoice = GeminiDetection.isInvoiceWithGemini(message);
+          logWithUser(`Gemini invoice detection result: ${isInvoice}`, "INFO");
+          return isInvoice;
+        } catch (geminiError) {
+          logWithUser(
+            `Gemini detection error: ${geminiError.message}, trying fallback options`,
+            "WARNING"
+          );
+
+          // Try OpenAI if enabled as fallback
+          if (CONFIG.invoiceDetection === "openai") {
+            try {
+              const isInvoice = OpenAIDetection.isInvoiceWithOpenAI(message);
+              logWithUser(
+                `OpenAI invoice detection result: ${isInvoice}`,
+                "INFO"
+              );
+              return isInvoice;
+            } catch (openaiError) {
+              logWithUser(
+                `OpenAI detection error: ${openaiError.message}, falling back to keywords`,
+                "WARNING"
+              );
+              return CONFIG.fallbackToKeywords ? checkKeywords(message) : false;
+            }
+          } else if (CONFIG.fallbackToKeywords) {
+            return checkKeywords(message);
+          } else {
+            return false;
+          }
+        }
+      }
+      // Try OpenAI if Gemini is disabled but OpenAI is enabled
+      else if (CONFIG.invoiceDetection === "openai") {
+        try {
+          const isInvoice = OpenAIDetection.isInvoiceWithOpenAI(message);
+          logWithUser(`OpenAI invoice detection result: ${isInvoice}`, "INFO");
+          return isInvoice;
+        } catch (openaiError) {
+          logWithUser(
+            `OpenAI detection error: ${openaiError.message}, falling back to keywords`,
+            "WARNING"
+          );
+          return CONFIG.fallbackToKeywords ? checkKeywords(message) : false;
+        }
+      }
+    }
+
+    // Use keyword detection if no AI is enabled
+    return checkKeywords(message);
+  } catch (error) {
+    logWithUser(`Error in invoice detection: ${error.message}`, "ERROR");
+    return false;
+  }
+}
+
+/**
+ * Helper function to check for invoice keywords in message subject and body
+ *
+ * @param {GmailMessage} message - The Gmail message to check
+ * @returns {boolean} True if invoice keywords are found
+ */
+function checkKeywords(message) {
+  try {
+    // Check subject for invoice keywords
+    const subject = message.getSubject().toLowerCase();
+    for (const keyword of CONFIG.invoiceKeywords) {
+      if (subject.includes(keyword.toLowerCase())) {
+        logWithUser(
+          `Invoice keyword "${keyword}" found in subject: "${subject}"`,
+          "INFO"
+        );
+        return true;
+      }
+    }
+
+    // Check body for invoice keywords (optional, may affect performance)
+    try {
+      const body = message.getPlainBody().toLowerCase();
+      for (const keyword of CONFIG.invoiceKeywords) {
+        if (body.includes(keyword.toLowerCase())) {
+          logWithUser(
+            `Invoice keyword "${keyword}" found in message body`,
+            "INFO"
+          );
+          return true;
+        }
+      }
+    } catch (e) {
+      // If we can't get the body, just log and continue
+      logWithUser(`Could not check message body: ${e.message}`, "WARNING");
+    }
+
+    return false;
+  } catch (error) {
+    logWithUser(
+      `Error checking for invoice keywords: ${error.message}`,
+      "ERROR"
+    );
+    return false;
+  }
+}
+
+/**
+ * Determines if an attachment appears to be an invoice based on file extension and content type
+ *
+ * @param {GmailAttachment} attachment - The attachment to analyze
+ * @returns {boolean} True if the attachment likely is an invoice
+ */
+function isInvoiceAttachment(attachment) {
+  if (CONFIG.invoiceDetection === false) return false;
+
+  try {
+    const fileName = attachment.getName().toLowerCase();
+    const contentType = attachment.getContentType().toLowerCase();
+
+    // Check file extension against invoice file types with stricter checking
+    for (const ext of CONFIG.invoiceFileTypes) {
+      const lowerExt = ext.toLowerCase();
+
+      // Strict PDF check - both extension and MIME type
+      if (CONFIG.strictPdfCheck) {
+        if (
+          lowerExt === ".pdf" &&
+          fileName.endsWith(lowerExt) &&
+          contentType.includes("pdf")
+        ) {
+          return true;
+        }
+      } else {
+        // Legacy check - just extension
+        if (fileName.endsWith(lowerExt)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  } catch (error) {
+    logWithUser(
+      `Error checking if attachment is invoice: ${error.message}`,
+      "ERROR"
+    );
+    return false;
+  }
+}
+
+/**
  * Gets or creates the processed label
  *
  * @returns {GmailLabel} The Gmail label used to mark processed threads
@@ -1727,6 +3448,18 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
             if (validAttachments.length > 0) {
               const domainFolder = getDomainFolder(sender, mainFolder);
 
+              // Check if this message might contain invoices
+              const isInvoice = isInvoiceMessage(message);
+              let invoicesFolder = null;
+
+              // If invoice detection is enabled and this might be an invoice,
+              // get the invoices folder with domain subfolder
+              if (CONFIG.invoiceDetection !== false && isInvoice) {
+                logWithUser(`Message appears to contain invoice(s)`, "INFO");
+                const senderDomain = extractDomain(sender);
+                invoicesFolder = getInvoicesFolder(mainFolder, senderDomain);
+              }
+
               // Process each valid attachment
               for (let k = 0; k < validAttachments.length; k++) {
                 const attachment = validAttachments[k];
@@ -1777,6 +3510,48 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
                         )} minutes`,
                         "WARNING"
                       );
+                    }
+
+                    // If this is an invoice or the attachment looks like an invoice,
+                    // also save it to the invoices folder
+                    if (invoicesFolder || isInvoiceAttachment(attachment)) {
+                      if (!invoicesFolder) {
+                        logWithUser(
+                          `Attachment appears to be an invoice based on file type`,
+                          "INFO"
+                        );
+                        const senderDomain = extractDomain(sender);
+                        invoicesFolder = getInvoicesFolder(
+                          mainFolder,
+                          senderDomain
+                        );
+                      }
+
+                      // Save a copy to the invoices folder
+                      try {
+                        logWithUser(
+                          `Saving copy to invoices folder: ${CONFIG.invoicesFolderName}`,
+                          "INFO"
+                        );
+                        const invoiceFile = saveAttachmentLegacy(
+                          attachment,
+                          invoicesFolder,
+                          messageDate
+                        );
+
+                        if (invoiceFile) {
+                          logWithUser(
+                            `Successfully saved invoice copy: ${attachment.getName()}`,
+                            "INFO"
+                          );
+                        }
+                      } catch (invoiceError) {
+                        logWithUser(
+                          `Error saving to invoices folder: ${invoiceError.message}`,
+                          "ERROR"
+                        );
+                        // Continue processing even if saving to invoices folder fails
+                      }
                     }
                   } catch (e) {
                     // Just log the error but don't stop processing
@@ -1899,10 +3674,22 @@ function processMessages(thread, processedLabel, mainFolder) {
           continue;
         }
 
+        // Check if this message might contain invoices
+        const isInvoice = isInvoiceMessage(message);
+        let invoicesFolder = null;
+
+        // If invoice detection is enabled and this might be an invoice,
+        // get the invoices folder with domain subfolder
+        if (CONFIG.invoiceDetection !== false && isInvoice) {
+          logWithUser(`Message appears to contain invoice(s)`, "INFO");
+          invoicesFolder = getInvoicesFolder(mainFolder, domain);
+        }
+
         result.totalAttachments += validAttachments.length;
 
         // Process each valid attachment
         for (const attachment of validAttachments) {
+          // Save to domain folder
           const saveResult = saveAttachment(attachment, message, domainFolder);
 
           if (saveResult.success) {
@@ -1911,6 +3698,44 @@ function processMessages(thread, processedLabel, mainFolder) {
             } else {
               result.savedAttachments++;
               result.savedSize += attachment.getSize();
+
+              // If this is an invoice or the attachment looks like an invoice,
+              // also save it to the invoices folder
+              if (invoicesFolder || isInvoiceAttachment(attachment)) {
+                if (!invoicesFolder) {
+                  logWithUser(
+                    `Attachment appears to be an invoice based on file type`,
+                    "INFO"
+                  );
+                  invoicesFolder = getInvoicesFolder(mainFolder, domain);
+                }
+
+                // Save a copy to the invoices folder
+                try {
+                  logWithUser(
+                    `Saving copy to invoices folder: ${CONFIG.invoicesFolderName}`,
+                    "INFO"
+                  );
+                  const invoiceResult = saveAttachment(
+                    attachment,
+                    message,
+                    invoicesFolder
+                  );
+
+                  if (invoiceResult.success && !invoiceResult.duplicate) {
+                    logWithUser(
+                      `Successfully saved invoice copy: ${attachment.getName()}`,
+                      "INFO"
+                    );
+                  }
+                } catch (invoiceError) {
+                  logWithUser(
+                    `Error saving to invoices folder: ${invoiceError.message}`,
+                    "ERROR"
+                  );
+                  // Continue processing even if saving to invoices folder fails
+                }
+              }
             }
           } else {
             result.skippedAttachments++;

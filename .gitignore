@@ -3,3 +3,5 @@ build/
 node_modules/
 .clasp.json
 package-lock.json
+logs/
+.vscode/settings.json

@@ -24,6 +24,10 @@ dotenv.config();
 const fileOrder = [
   "Config.gs", // Configuration first
   "Utils.gs", // General utilities
+  "HistoricalPatterns.gs", // Historical pattern analysis for invoice detection
+  "OpenAIDetection.gs", // OpenAI Detection for invoice analysis (legacy)
+  "GeminiDetection.gs", // Gemini Detection for invoice analysis (recommended)
+  "VerifyAPIKeys.gs", // API key verification utilities
   "UserManagement.gs", // User management
   "AttachmentFilters.gs", // Attachment filters
   "FolderManagement.gs", // Folder management
@@ -105,6 +109,8 @@ const header = `/**
  * Key features:
  * - Automatic organization by sender domain
  * - Configurable filters for file types and sizes
+ * - AI-based invoice detection using Google Gemini or OpenAI
+ * - Privacy-focused metadata analysis for invoice detection
  * - Scheduled processing via time-based triggers
  * - Multi-user support with permission management
  * - Robust error handling with retry logic
@@ -167,13 +173,32 @@ ${content}`;
     // Create a version for single-file (unchanged)
     fs.appendFileSync(outputFileSingle, content);
 
-    // Create a version for build (with FOLDER_ID from .env)
+    // Create a version for build (with environment variables from .env)
     let buildContent = content;
-    if (filename === "Config.gs" && process.env.FOLDER_ID) {
-      buildContent = buildContent.replace(
-        'mainFolderId: "__FOLDER_ID__"',
-        `mainFolderId: "${process.env.FOLDER_ID}"`
-      );
+    if (filename === "Config.gs") {
+      // Replace FOLDER_ID if available
+      if (process.env.FOLDER_ID) {
+        buildContent = buildContent.replace(
+          'mainFolderId: "__FOLDER_ID__"',
+          `mainFolderId: "${process.env.FOLDER_ID}"`
+        );
+      }
+
+      // Replace OPENAI_API_KEY if available
+      if (process.env.OPENAI_API_KEY) {
+        buildContent = buildContent.replace(
+          'openAIApiKey: "__OPENAI_API_KEY__"',
+          `openAIApiKey: "${process.env.OPENAI_API_KEY}"`
+        );
+      }
+
+      // Replace GEMINI_API_KEY if available
+      if (process.env.GEMINI_API_KEY) {
+        buildContent = buildContent.replace(
+          'geminiApiKey: "__GEMINI_API_KEY__"',
+          `geminiApiKey: "${process.env.GEMINI_API_KEY}"`
+        );
+      }
     }
     fs.appendFileSync(outputFileBuild, buildContent);
   } else {
@@ -207,6 +232,10 @@ function getModuleDescription(moduleName) {
   const descriptions = {
     CONFIG: "CONFIGURATION",
     UTILS: "UTILITIES",
+    HISTORICALPATTERNS: "HISTORICAL PATTERN ANALYSIS",
+    OPENAIDETECTION: "OPENAI DETECTION",
+    GEMINIDETECTION: "GEMINI DETECTION",
+    VERIFYAPIKEYS: "API KEY VERIFICATION",
     USERMANAGEMENT: "USER MANAGEMENT",
     ATTACHMENTFILTERS: "ATTACHMENT FILTERS",
     FOLDERMANAGEMENT: "FOLDER MANAGEMENT",

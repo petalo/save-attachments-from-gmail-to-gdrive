@@ -13,11 +13,16 @@
     "open": "clasp open",
     "pull": "clasp pull",
     "test": "clasp run testFolderId",
+    "test:openai": "node test-openai.js",
+    "test:gemini": "node test-gemini.js",
+    "test:api-keys": "node test-api-keys.js",
     "version": "clasp version \"Automated deploy $(date)\"",
     "deploy:version": "npm run deploy && npm run version",
     "postinstall": "echo \"\\nSetup complete! Run 'npm run build' to generate files and 'npm run deploy' to upload to Google Apps Script.\\n\""
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.0",
+    "axios": "^1.6.7",
     "dotenv": "^16.4.7",
     "googleapis": "^148.0.0"
   },
