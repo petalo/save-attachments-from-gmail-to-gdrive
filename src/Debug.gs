@@ -413,137 +413,23 @@ function cleanupMislabeledThreads() {
 
 /**
  * Tests the file timestamp functionality
- * Creates a test file and tries to set its timestamp to 6 months ago
- * Verifies if the timestamp was set correctly
+ * This function is now deprecated as the timestamp functionality has been removed
+ * due to limitations in the Google Drive API.
  *
- * @returns {boolean} True if the test was successful, false otherwise
+ * @returns {boolean} Always returns false with a message about the feature being removed
  */
 function testTimestamps() {
-  try {
-    logWithUser("Starting timestamp test...", "INFO");
+  logWithUser("File timestamp functionality has been removed", "WARNING");
+  logWithUser(
+    "The Google Drive API does not support modifying file creation dates",
+    "INFO"
+  );
+  logWithUser(
+    "This feature has been moved to the future enhancements list",
+    "INFO"
+  );
 
-    // Check if Drive Advanced Service is enabled
-    if (typeof Drive === "undefined") {
-      logWithUser("Drive advanced service is not enabled!", "ERROR");
-      return false;
-    }
-
-    // Log available Drive methods to help diagnose issues
-    logWithUser(
-      `Drive.Files.get available: ${typeof Drive.Files.get !== "undefined"}`,
-      "INFO"
-    );
-    logWithUser(
-      `Drive.Files.update available: ${
-        typeof Drive.Files.update !== "undefined"
-      }`,
-      "INFO"
-    );
-    logWithUser(
-      `Drive.Files.patch available: ${
-        typeof Drive.Files.patch !== "undefined"
-      }`,
-      "INFO"
-    );
-    logWithUser(
-      `Drive.Files.list available: ${typeof Drive.Files.list !== "undefined"}`,
-      "INFO"
-    );
-
-    // Get main folder for testing
-    const mainFolder = DriveApp.getFolderById(CONFIG.mainFolderId);
-    logWithUser(`Main folder: ${mainFolder.getName()}`, "INFO");
-
-    // Create a test file with current timestamp in the name to make it unique
-    const timestamp = new Date().getTime();
-    const testFileName = `timestamp_test_${timestamp}.txt`;
-    const testFile = mainFolder.createFile(
-      testFileName,
-      "This is a test file for timestamp testing."
-    );
-    logWithUser(
-      `Created test file: ${testFileName} with ID ${testFile.getId()}`,
-      "INFO"
-    );
-
-    // Get the default creation date
-    const defaultDate = testFile.getLastUpdated();
-    logWithUser(`Default creation date: ${defaultDate.toISOString()}`, "INFO");
-
-    // Create a date 6 months ago
-    const now = new Date();
-    const sixMonthsAgo = new Date();
-    sixMonthsAgo.setMonth(now.getMonth() - 6);
-    logWithUser(
-      `Target date (6 months ago): ${sixMonthsAgo.toISOString()}`,
-      "INFO"
-    );
-
-    // Try to set the creation date
-    logWithUser(
-      `Attempting to change timestamp to: ${sixMonthsAgo.toISOString()}`,
-      "INFO"
-    );
-    const success = setFileCreationDate(testFile, sixMonthsAgo);
-
-    if (success) {
-      try {
-        // Find the updated file by name instead of ID since the ID may have changed
-        const files = mainFolder.getFilesByName(testFileName);
-        if (!files.hasNext()) {
-          logWithUser(
-            "ERROR: Can't find the test file after timestamp operation",
-            "ERROR"
-          );
-          return false;
-        }
-
-        const updatedFile = files.next();
-        logWithUser(
-          `Found updated file with ID: ${updatedFile.getId()}`,
-          "INFO"
-        );
-
-        // Check the description for the timestamp marker
-        const description = updatedFile.getDescription() || "";
-        if (description.includes("original_date=")) {
-          logWithUser(
-            "Success: File description contains the timestamp marker",
-            "INFO"
-          );
-        } else {
-          logWithUser(
-            "Warning: File description does not contain timestamp marker",
-            "WARNING"
-          );
-        }
-
-        // The actual file date won't match our target exactly, but at least check
-        // that we didn't create a future-dated file
-        const updatedDate = updatedFile.getLastUpdated();
-        logWithUser(`Updated file date: ${updatedDate.toISOString()}`, "INFO");
-
-        // Success criteria:
-        // 1. Timestamp is in description
-        // 2. File exists with the correct name
-
-        logWithUser(
-          "SUCCESS: Timestamp function completed and file preserved",
-          "INFO"
-        );
-        return true;
-      } catch (e) {
-        logWithUser(`Error verifying timestamp: ${e.message}`, "ERROR");
-        return false;
-      }
-    } else {
-      logWithUser("ERROR: Timestamp function failed", "ERROR");
-      return false;
-    }
-  } catch (error) {
-    logWithUser(`Error in timestamp test: ${error.message}`, "ERROR");
-    return false;
-  }
+  return false;
 }
 
 /**

@@ -12,16 +12,13 @@
  *
  * The function follows this flow:
  * 1. Extracts attachment name and size for logging
- * 2. Gets the email date to use for the file timestamp
- * 3. Checks if a file with the same name already exists in the domain folder
- * 4. If a file exists with the same name:
+ * 2. Checks if a file with the same name already exists in the domain folder
+ * 3. If a file exists with the same name:
  *    - Compares file sizes to detect duplicates
  *    - If sizes match, considers it a duplicate and returns the existing file
  *    - If sizes differ, generates a unique filename to avoid collision
- * 5. Creates the file in Google Drive (either with original or unique name)
- * 6. Sets the file creation date to match the email date
- * 7. Verifies timestamp accuracy and logs warnings for significant differences
- * 8. Returns a detailed result object with success status and file reference
+ * 4. Creates the file in Google Drive (either with original or unique name)
+ * 5. Returns a detailed result object with success status and file reference
  *
  * This function handles duplicate detection and collision avoidance to ensure
  * no attachments are lost when processing emails.
@@ -37,9 +34,9 @@ function saveAttachment(attachment, message, domainFolder) {
       "INFO"
     );
 
-    // Get the date of the email for the file timestamp
+    // Get the date of the email for logging purposes
     const emailDate = message.getDate();
-    logWithUser(`Email date for timestamp: ${emailDate.toISOString()}`, "INFO");
+    logWithUser(`Email date: ${emailDate.toISOString()}`, "INFO");
 
     // Skip filter logging details here - we've already decided to save this file
 
@@ -65,8 +62,8 @@ function saveAttachment(attachment, message, domainFolder) {
           attachment.copyBlob().setName(newName)
         );
 
-        // Set the file creation date to match the email date
-        setFileCreationDate(savedFile, emailDate);
+        // Add date info to the description for reference
+        savedFile.setDescription(`email_date=${emailDate.toISOString()}`);
 
         logWithUser(
           `Successfully saved: ${newName} in ${domainFolder.getName()}`,
@@ -78,30 +75,13 @@ function saveAttachment(attachment, message, domainFolder) {
       // Save the file normally
       const savedFile = domainFolder.createFile(attachment);
 
-      // Set the file creation date to match the email date
-      setFileCreationDate(savedFile, emailDate);
+      // Add date info to the description for reference
+      savedFile.setDescription(`email_date=${emailDate.toISOString()}`);
 
       logWithUser(
         `Successfully saved: ${attachmentName} in ${domainFolder.getName()}`,
         "INFO"
       );
-
-      // Log a warning if the file timestamp differs significantly from email date
-      const fileDate = savedFile.getLastUpdated();
-      const diffMs = Math.abs(fileDate.getTime() - emailDate.getTime());
-      const diffMinutes = Math.round(diffMs / (1000 * 60));
-
-      if (diffMinutes > 60) {
-        // Only log warnings if more than 1 hour difference
-        logWithUser(
-          `Saved file modification date: ${fileDate.toISOString()}`,
-          "INFO"
-        );
-        logWithUser(
-          `⚠️ File timestamp differs from email date by ${diffMinutes} minutes`,
-          "WARNING"
-        );
-      }
 
       return { success: true, duplicate: false, file: savedFile };
     }
@@ -112,120 +92,6 @@ function saveAttachment(attachment, message, domainFolder) {
     );
     return { success: false, error: error.message };
   }
-}
-
-/**
- * Sets the creation date of a file to match a specific date
- * This uses file recreation since the Drive API methods don't work reliably
- *
- * @param {DriveFile} file - The Google Drive file
- * @param {Date} date - The date to set as creation date
- * @returns {boolean} True if successful, false otherwise
- *
- * The function follows this flow:
- * 1. Logs the operation for tracking purposes
- * 2. Skips standard Drive API methods that often fail with "File not found" errors
- * 3. Implements a workaround by:
- *    - Getting the original file's content as a blob
- *    - Creating a new file with the same content in the same folder
- *    - Setting the new file's name to match the original
- *    - Adding the original date to the file's description metadata
- *    - For text files, appending an invisible timestamp comment
- *    - Deleting the original file by moving it to trash
- * 4. Returns success even if the exact timestamp couldn't be set
- *
- * This workaround is necessary because Google Drive doesn't provide direct API
- * methods to modify file creation dates, and this approach preserves the file's
- * content while associating it with the email's timestamp.
- */
-function setFileCreationDate(file, date) {
-  try {
-    const fileName = file.getName();
-    const fileId = file.getId();
-
-    logWithUser(`Setting timestamp for file: ${fileName}`, "INFO");
-
-    // Skip Drive API methods as they consistently fail with "File not found" errors
-    // Go directly to the file recreation method that works
-    try {
-      // Get file content
-      const blob = file.getBlob();
-      const mimeType = file.getMimeType();
-      const parentFolder = file.getParents().next();
-
-      // Create new file with the same content
-      const newFile = parentFolder.createFile(blob);
-      newFile.setName(fileName);
-
-      // Add date info to the description
-      newFile.setDescription(`original_date=${date.toISOString()}`);
-
-      // For text files, try appending an invisible comment
-      if (
-        mimeType.includes("text/") ||
-        mimeType.includes("application/json") ||
-        mimeType.includes("xml") ||
-        mimeType.includes("html")
-      ) {
-        try {
-          const content = newFile.getBlob().getDataAsString();
-          const updatedContent =
-            content + "\n<!-- timestamp:" + date.getTime() + " -->";
-          newFile.setContent(updatedContent);
-        } catch (e) {
-          // Just log and continue
-          logWithUser(`Content update error: ${e.message}`, "WARNING");
-        }
-      }
-
-      // Delete original file
-      file.setTrashed(true);
-
-      // Verify result
-      const finalDate = newFile.getLastUpdated();
-
-      // Return success even if we couldn't set the exact date
-      // The important thing is preserving the file content
-      logWithUser(
-        `Created replacement file with ID: ${newFile.getId()}`,
-        "INFO"
-      );
-      return true;
-    } catch (e) {
-      logWithUser(`File recreation failed: ${e.message}`, "ERROR");
-      return false;
-    }
-  } catch (error) {
-    logWithUser(
-      `General error in setFileCreationDate: ${error.message}`,
-      "ERROR"
-    );
-    return false;
-  }
-}
-
-/**
- * Calculate the difference in months between two dates
- * Helper function for timestamp verification
- *
- * @param {Date} date1 - First date
- * @param {Date} date2 - Second date
- * @returns {number} Difference in months (can be decimal)
- */
-function dateDiffInMonths(date1, date2) {
-  const monthDiff =
-    (date2.getFullYear() - date1.getFullYear()) * 12 +
-    (date2.getMonth() - date1.getMonth());
-
-  // Add day-based fraction for more precision
-  const dayDiff = date2.getDate() - date1.getDate();
-  const daysInMonth = new Date(
-    date1.getFullYear(),
-    date1.getMonth() + 1,
-    0
-  ).getDate();
-
-  return monthDiff + dayDiff / daysInMonth;
 }
 
 /**
