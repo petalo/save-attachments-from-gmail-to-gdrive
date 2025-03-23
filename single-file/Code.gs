@@ -25,57 +25,52 @@
 
 // Configuration constants
 const CONFIG = {
+  //=============================================================================
+  // CORE SETTINGS - Essential configuration for basic functionality
+  //=============================================================================
+
+  // Google Drive folder where attachments will be saved
+  // This is the main parent folder that will contain domain subfolders
   mainFolderId: "__FOLDER_ID__", // Replace with your Google Drive shared folder's ID
-  processedLabelName: "GDrive_Processed", // Label to mark processed threads in Gmail
-  skipDomains: ["example.com", "noreply.com"], // Skip emails from these domains
-  triggerIntervalMinutes: 10, // Interval in minutes for the trigger execution
-  batchSize: 10, // Process this many threads at a time to avoid the 6 minutes execution limit
-  skipFileTypes: [".ics", ".ical", ".pkpass", ".vcf", ".vcard"], // Additional file types to skip (e.g., calendar invitations, etc.)
-  invoiceDetection: "gemini", // AI to use for invoice detection: "gemini", "openai", or false to disable
-  invoicesFolderName: "aaa_Facturas", // Name of the special folder for invoices in Google Drive shared folder
 
-  // AI configuration for invoice detection
-  // OpenAI settings (legacy)
-  openAIApiKey: "__OPENAI_API_KEY__", // Will be replaced during build
-  openAIApiKeyPropertyName: "openai_api_key", // Property name to store the API key
-  openAIModel: "gpt-3.5-turbo", // Model to use
-  openAIMaxTokens: 100, // Maximum tokens for response
-  openAITemperature: 0.05, // Very low temperature for more conservative responses (reduces false positives)
+  // Gmail label applied to threads after processing
+  // This prevents the same emails from being processed multiple times
+  processedLabelName: "GDrive_Processed",
 
-  // Gemini settings (recommended)
-  geminiApiKey: "__GEMINI_API_KEY__", // Will be replaced during build
-  geminiApiKeyPropertyName: "gemini_api_key", // Property name to store the API key
-  geminiModel: "gemini-2.0-flash", // Model to use (updated to available model)
-  geminiMaxTokens: 10, // Maximum tokens for response (we only need a number)
-  geminiTemperature: 0.05, // Very low temperature for more conservative responses
-
-  // Shared AI settings
-  skipAIForDomains: ["newsletter.com", "marketing.com"], // Skip AI for these domains
-  onlyAnalyzePDFs: true, // Only send emails with PDF attachments to AI
-  strictPdfCheck: true, // Check both file extension and MIME type for PDFs
-  fallbackToKeywords: true, // Fall back to keyword detection if AI fails
-  aiConfidenceThreshold: 0.9, // High confidence threshold to reduce false positives (0.0-1.0)
-
-  // Historical pattern analysis for invoice detection
-  manuallyLabeledInvoicesLabel: "tickets/facturas", // Label used for manually identified invoices
-  useHistoricalPatterns: true, // Enable/disable historical pattern analysis
-  maxHistoricalEmails: 12, // Maximum number of historical emails to analyze
-
-  //
-  // You probably won't need to edit any other CONFIG variable below this line
-  //
+  // Execution settings
+  // RECOMMENDED VALUES:
+  // - triggerIntervalMinutes: 10-30 for normal use, 5 for high-volume environments
+  // - batchSize: 5-10 for most environments, lower for complex processing
+  // - executionLockTime: Should be at least 2x the expected execution time
+  // INTERDEPENDENCY: batchSize directly affects execution time - higher values may hit the 6-minute limit
+  triggerIntervalMinutes: 10, // How often the script runs (in minutes)
+  batchSize: 10, // Number of threads to process per execution (prevents hitting 6-minute limit)
   executionLockTime: 10, // Maximum time in minutes to wait for lock release
-  invoiceFileTypes: [".pdf"], // File types considered as invoices
-  invoiceKeywords: ["factura", "invoice", "receipt", "recibo", "pago"], // Keywords to search in subject/body
-  maxFileSize: 25 * 1024 * 1024, // 25MB max file size
-  maxRetries: 3, // Maximum number of retries for operations
-  maxRetryDelay: 10000, // Maximum delay in milliseconds for exponential backoff
-  retryDelay: 1000, // Initial delay in milliseconds for retries
-  skipSmallImages: true, // Skip small images like email signatures
-  smallImageExtensions: [".jpg", ".jpeg", ".png", ".gif", ".bmp"], // Image extensions to check
-  smallImageMaxSize: 20 * 1024, // 20KB max size for images to skip
-  useEmailTimestamps: true, // Set to true to use email timestamps as file creation dates
-  // List of MIME types that should always be saved as they are considered as real attachments
+
+  //=============================================================================
+  // FILTERING SETTINGS - Control which emails and attachments are processed
+  //=============================================================================
+
+  // Domain filtering
+  // Emails from these domains will be completely skipped during processing
+  skipDomains: ["example.com", "noreply.com"],
+
+  // Attachment filtering
+  skipFileTypes: [".ics", ".ical", ".pkpass", ".vcf", ".vcard"], // File types to skip (e.g., calendar invitations)
+  maxFileSize: 25 * 1024 * 1024, // Maximum attachment size (25MB)
+
+  // Small image filtering (helps avoid saving email signatures and tiny embedded images)
+  // INTERDEPENDENCY: skipSmallImages only works when smallImageExtensions and smallImageMaxSize are properly set
+  // RECOMMENDED VALUES:
+  // - 20KB is good for filtering most email signatures and tiny embedded images
+  // - Increase to 50KB to be more aggressive in filtering out small images
+  // - Decrease to 10KB to only filter the smallest images
+  skipSmallImages: true, // Whether to skip small images
+  smallImageExtensions: [".jpg", ".jpeg", ".png", ".gif", ".bmp"], // Image types to check for size
+  smallImageMaxSize: 20 * 1024, // Size threshold (20KB) - images smaller than this will be skipped
+
+  // Attachment whitelist - MIME types that should always be saved
+  // These are considered "real" attachments rather than embedded content
   attachmentTypesWhitelist: [
     "application/pdf",
     "application/msword",
@@ -91,32 +86,129 @@ const CONFIG = {
     "text/plain",
     "application/json",
   ],
-};
 
-/**
- * Test function to verify if the folder ID is valid
- * This function can be run directly from the Apps Script editor
- * to check if the configured folder ID is correct
- */
-function testFolderId() {
-  try {
-    const folder = DriveApp.getFolderById(CONFIG.mainFolderId);
-    const folderName = folder.getName();
-    Logger.log(
-      `Successfully found folder: ${folderName} with ID: ${CONFIG.mainFolderId}`
-    );
-    return {
-      success: true,
-      folderName: folderName,
-      folderId: CONFIG.mainFolderId,
-    };
-  } catch (e) {
-    Logger.log(
-      `Error accessing folder with ID ${CONFIG.mainFolderId}: ${e.message}`
-    );
-    return { success: false, error: e.message, folderId: CONFIG.mainFolderId };
-  }
-}
+  //=============================================================================
+  // INVOICE DETECTION - Settings for identifying and organizing invoices
+  //=============================================================================
+
+  // Main invoice detection settings
+  // RECOMMENDED VALUES:
+  // - invoiceDetection: "gemini" for best privacy and accuracy, "openai" as alternative, false to disable
+  // - invoicesFolderName: Using a prefix like "aaa_" ensures the folder appears at the top
+  // INTERDEPENDENCY: When invoiceDetection is enabled, detected invoices are saved to invoicesFolderName
+  invoiceDetection: "gemini", // AI provider to use: "gemini" (recommended), "openai", or false to disable
+  invoicesFolderName: "aaa_Facturas", // Special folder for invoices (prefix ensures it appears at top)
+
+  // Invoice file types and keywords
+  // INTERDEPENDENCY: invoiceFileTypes is used by onlyAnalyzePDFs in SHARED AI SETTINGS
+  // INTERDEPENDENCY: invoiceKeywords is used by fallbackToKeywords in SHARED AI SETTINGS
+  // RECOMMENDED VALUES:
+  // - Add common invoice-related terms in your language(s)
+  // - Include variations of terms (e.g., "factura", "facturación")
+  invoiceFileTypes: [".pdf"], // File extensions considered as potential invoices
+  invoiceKeywords: ["factura", "invoice", "receipt", "recibo", "pago"], // Keywords for basic detection
+
+  //=============================================================================
+  // GEMINI AI SETTINGS - Configuration for Google's Gemini AI (recommended)
+  //=============================================================================
+
+  // API configuration
+  // INTERDEPENDENCY: Only used when invoiceDetection = "gemini"
+  // The API key can be set in three ways:
+  // 1. Directly in this file (not recommended for security)
+  // 2. Through environment variables during build
+  // 3. Stored in Script Properties using the property name below
+  geminiApiKey: "__GEMINI_API_KEY__", // Will be replaced during build process
+  geminiApiKeyPropertyName: "gemini_api_key", // Property name for storing the key in Script Properties
+
+  // Model settings
+  // RECOMMENDED VALUES:
+  // - geminiModel: "gemini-2.0-flash" for fastest response, "gemini-pro" for older deployments
+  // - geminiMaxTokens: 10 is sufficient since we only need a confidence score
+  // - geminiTemperature: 0.05-0.1 for consistent responses, higher values introduce more variability
+  geminiModel: "gemini-2.0-flash", // Gemini model to use
+  geminiMaxTokens: 10, // Maximum tokens for response (low since we only need a confidence score)
+  geminiTemperature: 0.05, // Very low temperature for consistent, conservative responses
+
+  //=============================================================================
+  // OPENAI SETTINGS - Configuration for OpenAI (alternative to Gemini)
+  //=============================================================================
+
+  // API configuration
+  // INTERDEPENDENCY: Only used when invoiceDetection = "openai"
+  // The API key can be set in three ways:
+  // 1. Directly in this file (not recommended for security)
+  // 2. Through environment variables during build
+  // 3. Stored in Script Properties using the property name below
+  openAIApiKey: "__OPENAI_API_KEY__", // Will be replaced during build process
+  openAIApiKeyPropertyName: "openai_api_key", // Property name for storing the key in Script Properties
+
+  // Model settings
+  // RECOMMENDED VALUES:
+  // - openAIModel: "gpt-3.5-turbo" offers good balance of performance and cost
+  // - openAIMaxTokens: 100 is more than needed but provides flexibility
+  // - openAITemperature: 0.05-0.1 for consistent responses
+  openAIModel: "gpt-3.5-turbo", // OpenAI model to use
+  openAIMaxTokens: 100, // Maximum tokens for response
+  openAITemperature: 0.05, // Very low temperature for consistent, conservative responses
+
+  //=============================================================================
+  // SHARED AI SETTINGS - Settings that apply to both Gemini and OpenAI
+  //=============================================================================
+
+  // Domain exclusions for AI processing
+  // Emails from these domains will skip AI analysis and use keyword detection instead
+  skipAIForDomains: ["newsletter.com", "marketing.com"],
+
+  // PDF-only option - only analyze emails with PDF attachments
+  // This reduces unnecessary API calls and improves privacy
+  // INTERDEPENDENCY: When onlyAnalyzePDFs=true, only emails with PDF attachments are sent to AI
+  // INTERDEPENDENCY: When strictPdfCheck=true, both file extension and MIME type must match for PDFs
+  onlyAnalyzePDFs: true, // Only send emails with PDF attachments to AI
+  strictPdfCheck: true, // Check both file extension and MIME type for PDFs (more secure)
+
+  // Fallback and confidence settings
+  // INTERDEPENDENCY: When fallbackToKeywords=true, keyword detection is used if AI fails
+  // INTERDEPENDENCY: This works with invoiceKeywords setting in the INVOICE DETECTION section
+  fallbackToKeywords: true, // Use keyword detection if AI fails or is unavailable
+
+  // AI confidence threshold
+  // RECOMMENDED VALUES:
+  // - 0.9+ for environments where false positives are costly (current setting)
+  // - 0.7-0.8 for balanced precision/recall
+  // - 0.5-0.6 for maximum detection (more false positives)
+  aiConfidenceThreshold: 0.9, // Threshold (0.0-1.0) - higher values reduce false positives
+
+  //=============================================================================
+  // HISTORICAL PATTERN ANALYSIS - Learn from previously identified invoices
+  //=============================================================================
+
+  // Settings for analyzing patterns in previously identified invoices
+  // INTERDEPENDENCY: useHistoricalPatterns requires manuallyLabeledInvoicesLabel to be set
+  // INTERDEPENDENCY: This feature works with the AI invoice detection to improve accuracy
+  // RECOMMENDED VALUES:
+  // - maxHistoricalEmails: 8-12 for balanced analysis, more emails provide better patterns
+  //   but increase processing time
+  manuallyLabeledInvoicesLabel: "tickets/facturas", // Gmail label for manually identified invoices
+  useHistoricalPatterns: true, // Whether to use historical pattern analysis
+  maxHistoricalEmails: 12, // Maximum number of historical emails to analyze per sender
+
+  //=============================================================================
+  // TECHNICAL SETTINGS - Advanced settings for script operation
+  //=============================================================================
+
+  // Retry logic for handling transient errors
+  // RECOMMENDED VALUES:
+  // - maxRetries: 3-5 for most environments
+  // - retryDelay: 1000ms (1 second) is a good starting point
+  // - maxRetryDelay: 10000-30000ms (10-30 seconds) depending on operation criticality
+  // INTERDEPENDENCY: These settings work together to implement exponential backoff
+  maxRetries: 3, // Maximum number of retry attempts for operations
+  retryDelay: 1000, // Initial delay in milliseconds before first retry
+  maxRetryDelay: 10000, // Maximum delay between retries (for exponential backoff)
+
+  // No additional technical settings at this time
+};
 
 //=============================================================================
 // UTILS - UTILITIES
@@ -416,6 +508,31 @@ function getUniqueFilename(originalFilename, folder) {
 function extractDomain(email) {
   const domainMatch = email.match(/@([\w.-]+)/);
   return domainMatch ? domainMatch[1] : "unknown";
+}
+
+/**
+ * Test function to verify if the folder ID is valid
+ * This function can be run directly from the Apps Script editor
+ * to check if the configured folder ID is correct
+ */
+function testFolderId() {
+  try {
+    const folder = DriveApp.getFolderById(CONFIG.mainFolderId);
+    const folderName = folder.getName();
+    Logger.log(
+      `Successfully found folder: ${folderName} with ID: ${CONFIG.mainFolderId}`
+    );
+    return {
+      success: true,
+      folderName: folderName,
+      folderId: CONFIG.mainFolderId,
+    };
+  } catch (e) {
+    Logger.log(
+      `Error accessing folder with ID ${CONFIG.mainFolderId}: ${e.message}`
+    );
+    return { success: false, error: e.message, folderId: CONFIG.mainFolderId };
+  }
 }
 
 //=============================================================================
@@ -2670,16 +2787,13 @@ function getDomainFolder(sender, mainFolder) {
  *
  * The function follows this flow:
  * 1. Extracts attachment name and size for logging
- * 2. Gets the email date to use for the file timestamp
- * 3. Checks if a file with the same name already exists in the domain folder
- * 4. If a file exists with the same name:
+ * 2. Checks if a file with the same name already exists in the domain folder
+ * 3. If a file exists with the same name:
  *    - Compares file sizes to detect duplicates
  *    - If sizes match, considers it a duplicate and returns the existing file
  *    - If sizes differ, generates a unique filename to avoid collision
- * 5. Creates the file in Google Drive (either with original or unique name)
- * 6. Sets the file creation date to match the email date
- * 7. Verifies timestamp accuracy and logs warnings for significant differences
- * 8. Returns a detailed result object with success status and file reference
+ * 4. Creates the file in Google Drive (either with original or unique name)
+ * 5. Returns a detailed result object with success status and file reference
  *
  * This function handles duplicate detection and collision avoidance to ensure
  * no attachments are lost when processing emails.
@@ -2695,9 +2809,9 @@ function saveAttachment(attachment, message, domainFolder) {
       "INFO"
     );
 
-    // Get the date of the email for the file timestamp
+    // Get the date of the email for logging purposes
     const emailDate = message.getDate();
-    logWithUser(`Email date for timestamp: ${emailDate.toISOString()}`, "INFO");
+    logWithUser(`Email date: ${emailDate.toISOString()}`, "INFO");
 
     // Skip filter logging details here - we've already decided to save this file
 
@@ -2723,8 +2837,8 @@ function saveAttachment(attachment, message, domainFolder) {
           attachment.copyBlob().setName(newName)
         );
 
-        // Set the file creation date to match the email date
-        setFileCreationDate(savedFile, emailDate);
+        // Add date info to the description for reference
+        savedFile.setDescription(`email_date=${emailDate.toISOString()}`);
 
         logWithUser(
           `Successfully saved: ${newName} in ${domainFolder.getName()}`,
@@ -2736,30 +2850,13 @@ function saveAttachment(attachment, message, domainFolder) {
       // Save the file normally
       const savedFile = domainFolder.createFile(attachment);
 
-      // Set the file creation date to match the email date
-      setFileCreationDate(savedFile, emailDate);
+      // Add date info to the description for reference
+      savedFile.setDescription(`email_date=${emailDate.toISOString()}`);
 
       logWithUser(
         `Successfully saved: ${attachmentName} in ${domainFolder.getName()}`,
         "INFO"
       );
-
-      // Log a warning if the file timestamp differs significantly from email date
-      const fileDate = savedFile.getLastUpdated();
-      const diffMs = Math.abs(fileDate.getTime() - emailDate.getTime());
-      const diffMinutes = Math.round(diffMs / (1000 * 60));
-
-      if (diffMinutes > 60) {
-        // Only log warnings if more than 1 hour difference
-        logWithUser(
-          `Saved file modification date: ${fileDate.toISOString()}`,
-          "INFO"
-        );
-        logWithUser(
-          `⚠️ File timestamp differs from email date by ${diffMinutes} minutes`,
-          "WARNING"
-        );
-      }
 
       return { success: true, duplicate: false, file: savedFile };
     }
@@ -2770,120 +2867,6 @@ function saveAttachment(attachment, message, domainFolder) {
     );
     return { success: false, error: error.message };
   }
-}
-
-/**
- * Sets the creation date of a file to match a specific date
- * This uses file recreation since the Drive API methods don't work reliably
- *
- * @param {DriveFile} file - The Google Drive file
- * @param {Date} date - The date to set as creation date
- * @returns {boolean} True if successful, false otherwise
- *
- * The function follows this flow:
- * 1. Logs the operation for tracking purposes
- * 2. Skips standard Drive API methods that often fail with "File not found" errors
- * 3. Implements a workaround by:
- *    - Getting the original file's content as a blob
- *    - Creating a new file with the same content in the same folder
- *    - Setting the new file's name to match the original
- *    - Adding the original date to the file's description metadata
- *    - For text files, appending an invisible timestamp comment
- *    - Deleting the original file by moving it to trash
- * 4. Returns success even if the exact timestamp couldn't be set
- *
- * This workaround is necessary because Google Drive doesn't provide direct API
- * methods to modify file creation dates, and this approach preserves the file's
- * content while associating it with the email's timestamp.
- */
-function setFileCreationDate(file, date) {
-  try {
-    const fileName = file.getName();
-    const fileId = file.getId();
-
-    logWithUser(`Setting timestamp for file: ${fileName}`, "INFO");
-
-    // Skip Drive API methods as they consistently fail with "File not found" errors
-    // Go directly to the file recreation method that works
-    try {
-      // Get file content
-      const blob = file.getBlob();
-      const mimeType = file.getMimeType();
-      const parentFolder = file.getParents().next();
-
-      // Create new file with the same content
-      const newFile = parentFolder.createFile(blob);
-      newFile.setName(fileName);
-
-      // Add date info to the description
-      newFile.setDescription(`original_date=${date.toISOString()}`);
-
-      // For text files, try appending an invisible comment
-      if (
-        mimeType.includes("text/") ||
-        mimeType.includes("application/json") ||
-        mimeType.includes("xml") ||
-        mimeType.includes("html")
-      ) {
-        try {
-          const content = newFile.getBlob().getDataAsString();
-          const updatedContent =
-            content + "\n<!-- timestamp:" + date.getTime() + " -->";
-          newFile.setContent(updatedContent);
-        } catch (e) {
-          // Just log and continue
-          logWithUser(`Content update error: ${e.message}`, "WARNING");
-        }
-      }
-
-      // Delete original file
-      file.setTrashed(true);
-
-      // Verify result
-      const finalDate = newFile.getLastUpdated();
-
-      // Return success even if we couldn't set the exact date
-      // The important thing is preserving the file content
-      logWithUser(
-        `Created replacement file with ID: ${newFile.getId()}`,
-        "INFO"
-      );
-      return true;
-    } catch (e) {
-      logWithUser(`File recreation failed: ${e.message}`, "ERROR");
-      return false;
-    }
-  } catch (error) {
-    logWithUser(
-      `General error in setFileCreationDate: ${error.message}`,
-      "ERROR"
-    );
-    return false;
-  }
-}
-
-/**
- * Calculate the difference in months between two dates
- * Helper function for timestamp verification
- *
- * @param {Date} date1 - First date
- * @param {Date} date2 - Second date
- * @returns {number} Difference in months (can be decimal)
- */
-function dateDiffInMonths(date1, date2) {
-  const monthDiff =
-    (date2.getFullYear() - date1.getFullYear()) * 12 +
-    (date2.getMonth() - date1.getMonth());
-
-  // Add day-based fraction for more precision
-  const dayDiff = date2.getDate() - date1.getDate();
-  const daysInMonth = new Date(
-    date1.getFullYear(),
-    date1.getMonth() + 1,
-    0
-  ).getDate();
-
-  return monthDiff + dayDiff / daysInMonth;
 }
 
 /**
@@ -2957,7 +2940,9 @@ function isInvoiceMessage(message) {
         // Skip AI if there are no PDF attachments
         if (!hasPDF) {
           logWithUser("No PDF attachments found, skipping AI analysis", "INFO");
-          return CONFIG.fallbackToKeywords ? checkKeywords(message) : false;
+          // Don't fall back to keywords when there are no PDFs if onlyAnalyzePDFs is true
+          // This prevents non-PDF attachments from being classified as invoices based on keywords
+          return false;
         }
       }
 
@@ -3774,17 +3759,84 @@ function processMessages(thread, processedLabel, mainFolder) {
 //=============================================================================
 
 /**
+ * Validates the configuration settings to ensure all required values are properly set
+ *
+ * @return {boolean} True if the configuration is valid, throws an error otherwise
+ */
+function validateConfig() {
+  // Check essential folder and label settings
+  if (!CONFIG.mainFolderId || CONFIG.mainFolderId === "__FOLDER_ID__") {
+    throw new Error(
+      "Configuration error: mainFolderId is not set. Please set a valid Google Drive folder ID."
+    );
+  }
+
+  // Validate AI configuration if enabled
+  if (CONFIG.invoiceDetection === "gemini") {
+    if (
+      CONFIG.geminiApiKey === "__GEMINI_API_KEY__" &&
+      !PropertiesService.getScriptProperties().getProperty(
+        CONFIG.geminiApiKeyPropertyName
+      )
+    ) {
+      throw new Error(
+        "Configuration error: Gemini API key is not set but Gemini invoice detection is enabled."
+      );
+    }
+  } else if (CONFIG.invoiceDetection === "openai") {
+    if (
+      CONFIG.openAIApiKey === "__OPENAI_API_KEY__" &&
+      !PropertiesService.getScriptProperties().getProperty(
+        CONFIG.openAIApiKeyPropertyName
+      )
+    ) {
+      throw new Error(
+        "Configuration error: OpenAI API key is not set but OpenAI invoice detection is enabled."
+      );
+    }
+  }
+
+  // Validate numerical values are within acceptable ranges
+  if (CONFIG.aiConfidenceThreshold < 0 || CONFIG.aiConfidenceThreshold > 1) {
+    throw new Error(
+      "Configuration error: aiConfidenceThreshold must be between 0 and 1."
+    );
+  }
+
+  if (CONFIG.batchSize < 1) {
+    throw new Error("Configuration error: batchSize must be at least 1.");
+  }
+
+  if (CONFIG.triggerIntervalMinutes < 1) {
+    throw new Error(
+      "Configuration error: triggerIntervalMinutes must be at least 1."
+    );
+  }
+
+  // Validate interdependent settings
+  if (CONFIG.onlyAnalyzePDFs && !CONFIG.invoiceFileTypes.includes(".pdf")) {
+    throw new Error(
+      "Configuration error: onlyAnalyzePDFs is enabled but .pdf is not in invoiceFileTypes."
+    );
+  }
+
+  return true;
+}
+
+/**
  * Main function that processes Gmail attachments for authorized users
  *
  * This function:
- * 1. Acquires an execution lock to prevent concurrent runs
- * 2. Gets the list of authorized users
- * 3. Processes emails for each user
- * 4. Logs completion
+ * 1. Validates the configuration
+ * 2. Acquires an execution lock to prevent concurrent runs
+ * 3. Gets the list of authorized users
+ * 4. Processes emails for each user
+ * 5. Logs completion
  *
  * @return {boolean} True if processing completed successfully, false if an error occurred or if no users are authorized.
  * The function follows a structured flow:
- * - It first attempts to acquire a lock to ensure no concurrent executions.
+ * - It first validates the configuration to ensure all required settings are properly set.
+ * - It attempts to acquire a lock to ensure no concurrent executions.
  * - It retrieves the list of authorized users.
  * - For each user, it processes their emails to save attachments to Google Drive.
  * - Logs are generated throughout the process to provide detailed information on the execution status.
@@ -3792,6 +3844,10 @@ function processMessages(thread, processedLabel, mainFolder) {
 function saveAttachmentsToDrive() {
   try {
     logWithUser("Starting attachment processing", "INFO");
+
+    // Validate configuration
+    validateConfig();
+    logWithUser("Configuration validated successfully", "INFO");
 
     // Acquire lock to prevent concurrent executions
     if (!acquireExecutionLock()) {
