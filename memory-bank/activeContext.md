@@ -13,8 +13,9 @@ The Gmail Attachment Organizer project is currently focused on enhancing its inv
 
 ### 1. Deployment Improvements
 
-- Added support for environment-based configuration via `.env` files
-- Implemented build process to generate pre-configured scripts
+- Added support for production and test environments via `.env.prod` and `.env.test` files
+- Enhanced build process with environment selection via `--env` parameter
+- Implemented dynamic `.clasp.json` generation based on environment
 - Created a single-file version for easier installation
 
 ### 2. Attachment Filtering Enhancements
@@ -95,12 +96,16 @@ The Gmail Attachment Organizer project is currently focused on enhancing its inv
 
 ### 5. Deployment Strategy
 
-**Current Decision**: Support multiple deployment options (single-file, modular, build-based)
+**Current Decision**: Support multiple deployment options (single-file, modular, build-based) with environment-specific configurations
 **Considerations**:
 
 - Single-file version is easier for non-technical users
 - Modular version is better for development and maintenance
 - Build-based version allows for environment-specific configuration
+- Production and test environments can use different:
+  - Google Drive folders
+  - Google Apps Script projects
+  - Gmail labels for processed threads
 
 ## Current Implementation Status
 

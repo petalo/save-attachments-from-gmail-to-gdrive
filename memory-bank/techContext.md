@@ -92,6 +92,10 @@
      - A single `Code.js` file for direct deployment
      - A version in the `build/` directory with environment variables applied
      - A version in the `single-file/` directory for manual copy-paste installation
+   - Supports environment selection via `--env` parameter:
+     - Production environment (default): `--env=prod`
+     - Test environment: `--env=test`
+   - Dynamically generates `.clasp.json` based on selected environment
 
 3. **Deployment Process**
    - Local development using clasp
@@ -188,8 +192,11 @@
 ## Configuration Management
 
 1. **Environment Variables**
-   - `.env` file for local development
-   - Contains sensitive information like folder IDs
+   - Environment-specific configuration files:
+     - `.env.prod` for production environment (mandatory)
+     - `.env.test` for test environment (optional)
+   - Contains sensitive information like folder IDs, script IDs, and API keys
+   - Includes environment-specific settings like `PROCESSED_LABEL_NAME`
    - Not committed to version control
 
 2. **Configuration Object**
@@ -207,7 +214,10 @@
      - `__FOLDER_ID__` - Main folder ID
      - `__GEMINI_API_KEY__` - Google Gemini API key
      - `__OPENAI_API_KEY__` - OpenAI API key
-   - Enables different configurations for different environments
+   - Environment-specific values are also replaced:
+     - `processedLabelName` - Custom label name for each environment
+   - Dynamically generates `.clasp.json` with the correct `scriptId`
+   - Enables different configurations for production and test environments
    - API keys can be provided at build time or stored in Script Properties
 
 ## Security Considerations
