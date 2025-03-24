@@ -106,6 +106,7 @@ The Gmail Attachment Organizer project is currently focused on enhancing its inv
   - Google Drive folders
   - Google Apps Script projects
   - Gmail labels for processed threads
+- **Important**: Avoid associating scripts with Google Cloud Platform (GCP) projects, as this can cause permission issues
 
 ## Current Implementation Status
 

@@ -97,7 +97,8 @@ function saveAttachmentsToDrive() {
     logWithUser("Configuration validated successfully", "INFO");
 
     // Acquire lock to prevent concurrent executions
-    if (!acquireExecutionLock()) {
+    const currentUser = Session.getEffectiveUser().getEmail();
+    if (!acquireExecutionLock(currentUser)) {
       logWithUser("Another instance is already running. Exiting.", "WARNING");
       return false;
     }

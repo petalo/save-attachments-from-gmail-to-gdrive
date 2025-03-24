@@ -231,6 +231,11 @@ const CONFIG = {
  * 4. Write the formatted message to the Apps Script log using Logger.log()
  */
 function logWithUser(message, level = "INFO") {
+  // Handle undefined or null message
+  if (message === undefined || message === null) {
+    message = "[No message provided]";
+  }
+
   const userEmail = Session.getEffectiveUser().getEmail();
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] [${level}] [${userEmail}] ${message}`;
@@ -343,7 +348,7 @@ function withRetry(operation, context = "") {
  * Prevents multiple simultaneous executions of the script by different users
  * Uses both LockService and Script Properties for robust locking
  *
- * @param {string} userEmail - The email of the user acquiring the lock
+ * @param {string} userEmail - The email of the user acquiring the lock. If not provided, uses current user.
  * @returns {boolean} True if the lock was acquired, false otherwise
  *
  * The function follows this flow:
@@ -356,6 +361,14 @@ function withRetry(operation, context = "") {
  * This dual locking mechanism provides redundancy in case either locking system fails.
  */
 function acquireExecutionLock(userEmail) {
+  // If userEmail is not provided, use the current user's email
+  if (!userEmail) {
+    userEmail = Session.getEffectiveUser().getEmail();
+    logWithUser(
+      `No user email provided for lock, using current user: ${userEmail}`,
+      "INFO"
+    );
+  }
   const scriptProperties = PropertiesService.getScriptProperties();
   const lockKey = "EXECUTION_LOCK";
 
@@ -428,10 +441,18 @@ function acquireExecutionLock(userEmail) {
  * 4. If the lock belongs to another user, log a warning but don't delete it
  * 5. If the lock data is invalid, delete it as a cleanup measure
  *
- * @param {string} userEmail - The email of the user releasing the lock
+ * @param {string} userEmail - The email of the user releasing the lock. If not provided, uses current user.
  * @returns {void} This function doesn't return a value, but logs the result of the operation
  */
 function releaseExecutionLock(userEmail) {
+  // If userEmail is not provided, use the current user's email
+  if (!userEmail) {
+    userEmail = Session.getEffectiveUser().getEmail();
+    logWithUser(
+      `No user email provided for lock release, using current user: ${userEmail}`,
+      "INFO"
+    );
+  }
   const scriptProperties = PropertiesService.getScriptProperties();
   const lockKey = "EXECUTION_LOCK";
 
@@ -1909,7 +1930,7 @@ var VerifyAPIKeys = {
 /**
  * Verify if a user has granted all required permissions
  *
- * @param {string} userEmail - The user's email address to verify
+ * @param {string} userEmail - The user's email address to verify. If not provided, uses current user.
  * @returns {boolean} True if the user has all required permissions
  *
  * The function follows this flow:
@@ -1927,6 +1948,14 @@ var VerifyAPIKeys = {
  * has granted the necessary permissions before attempting to process their data.
  */
 function verifyUserPermissions(userEmail) {
+  // If userEmail is not provided, use the current user's email
+  if (!userEmail) {
+    userEmail = Session.getEffectiveUser().getEmail();
+    logWithUser(
+      `No user email provided, using current user: ${userEmail}`,
+      "INFO"
+    );
+  }
   const currentUser = Session.getEffectiveUser().getEmail();
   const isCurrentUser = currentUser === userEmail;
 
@@ -2007,6 +2036,16 @@ function verifyUserPermissions(userEmail) {
     checkedUsers[userEmail] = result;
     scriptProperties.setProperty(checkedUsersKey, JSON.stringify(checkedUsers));
 
+    // Log the final result when called directly
+    if (!userEmail || userEmail === currentUser) {
+      logWithUser(
+        `Permission verification result for current user: ${
+          result ? "GRANTED" : "DENIED"
+        }`,
+        "INFO"
+      );
+    }
+
     return result;
   } catch (e) {
     logWithUser(
@@ -2039,12 +2078,22 @@ function requestPermissions() {
     logWithUser("Requesting permissions for Gmail and Drive...", "INFO");
 
     // Try to access Gmail - this will trigger the permission prompt
-    const gmailLabels = GmailApp.getUserLabels();
-    logWithUser("Gmail permissions granted", "INFO");
+    try {
+      const gmailLabels = GmailApp.getUserLabels();
+      logWithUser("Gmail permissions granted", "INFO");
+    } catch (gmailError) {
+      logWithUser(`Error accessing Gmail: ${gmailError.message}`, "ERROR");
+      return false;
+    }
 
     // Try to access Drive - this will trigger the permission prompt
-    const rootFolder = DriveApp.getRootFolder();
-    logWithUser("Drive permissions granted", "INFO");
+    try {
+      const rootFolder = DriveApp.getRootFolder();
+      logWithUser("Drive permissions granted", "INFO");
+    } catch (driveError) {
+      logWithUser(`Error accessing Drive: ${driveError.message}`, "ERROR");
+      return false;
+    }
 
     // Verify that we can access the main folder
     if (CONFIG.mainFolderId !== "YOUR_SHARED_FOLDER_ID") {
@@ -2054,11 +2103,13 @@ function requestPermissions() {
           `Successfully accessed main folder: ${mainFolder.getName()}`,
           "INFO"
         );
-      } catch (e) {
+      } catch (folderError) {
+        // This is not a critical error, just log it
         logWithUser(
-          `Error accessing main folder: ${e.message}. Please check the folder ID.`,
+          `Error accessing main folder: ${folderError.message}. Please check the folder ID.`,
           "ERROR"
         );
+        // Continue with the rest of the function
       }
     } else {
       logWithUser(
@@ -2068,25 +2119,32 @@ function requestPermissions() {
     }
 
     // Let's add the current user to the manual list if they have all permissions
-    const hasPermissions = verifyUserPermissions(userEmail);
-    if (hasPermissions) {
-      addUserToList(userEmail);
+    try {
+      const hasPermissions = verifyUserPermissions(userEmail);
+      if (hasPermissions) {
+        addUserToList(userEmail);
+        logWithUser(
+          "All required permissions have been granted successfully!",
+          "INFO"
+        );
+        logWithUser(
+          "You have been added to the users list and the script is ready to process your emails.",
+          "INFO"
+        );
+      } else {
+        logWithUser(
+          "Some permissions appear to be missing. Please run this function again.",
+          "WARNING"
+        );
+      }
+      return hasPermissions;
+    } catch (permissionError) {
       logWithUser(
-        "All required permissions have been granted successfully!",
-        "INFO"
+        `Error verifying permissions: ${permissionError.message}`,
+        "ERROR"
       );
-      logWithUser(
-        "You have been added to the users list and the script is ready to process your emails.",
-        "INFO"
-      );
-    } else {
-      logWithUser(
-        "Some permissions appear to be missing. Please run this function again.",
-        "WARNING"
-      );
+      return false;
     }
-
-    return hasPermissions;
   } catch (e) {
     logWithUser(`Error requesting permissions: ${e.message}`, "ERROR");
     return false;
@@ -3850,7 +3908,8 @@ function saveAttachmentsToDrive() {
     logWithUser("Configuration validated successfully", "INFO");
 
     // Acquire lock to prevent concurrent executions
-    if (!acquireExecutionLock()) {
+    const currentUser = Session.getEffectiveUser().getEmail();
+    if (!acquireExecutionLock(currentUser)) {
       logWithUser("Another instance is already running. Exiting.", "WARNING");
       return false;
     }

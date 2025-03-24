@@ -19,6 +19,11 @@
  * 4. Write the formatted message to the Apps Script log using Logger.log()
  */
 function logWithUser(message, level = "INFO") {
+  // Handle undefined or null message
+  if (message === undefined || message === null) {
+    message = "[No message provided]";
+  }
+
   const userEmail = Session.getEffectiveUser().getEmail();
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] [${level}] [${userEmail}] ${message}`;
@@ -131,7 +136,7 @@ function withRetry(operation, context = "") {
  * Prevents multiple simultaneous executions of the script by different users
  * Uses both LockService and Script Properties for robust locking
  *
- * @param {string} userEmail - The email of the user acquiring the lock
+ * @param {string} userEmail - The email of the user acquiring the lock. If not provided, uses current user.
  * @returns {boolean} True if the lock was acquired, false otherwise
  *
  * The function follows this flow:
@@ -144,6 +149,14 @@ function withRetry(operation, context = "") {
  * This dual locking mechanism provides redundancy in case either locking system fails.
  */
 function acquireExecutionLock(userEmail) {
+  // If userEmail is not provided, use the current user's email
+  if (!userEmail) {
+    userEmail = Session.getEffectiveUser().getEmail();
+    logWithUser(
+      `No user email provided for lock, using current user: ${userEmail}`,
+      "INFO"
+    );
+  }
   const scriptProperties = PropertiesService.getScriptProperties();
   const lockKey = "EXECUTION_LOCK";
 
@@ -216,10 +229,18 @@ function acquireExecutionLock(userEmail) {
  * 4. If the lock belongs to another user, log a warning but don't delete it
  * 5. If the lock data is invalid, delete it as a cleanup measure
  *
- * @param {string} userEmail - The email of the user releasing the lock
+ * @param {string} userEmail - The email of the user releasing the lock. If not provided, uses current user.
  * @returns {void} This function doesn't return a value, but logs the result of the operation
  */
 function releaseExecutionLock(userEmail) {
+  // If userEmail is not provided, use the current user's email
+  if (!userEmail) {
+    userEmail = Session.getEffectiveUser().getEmail();
+    logWithUser(
+      `No user email provided for lock release, using current user: ${userEmail}`,
+      "INFO"
+    );
+  }
   const scriptProperties = PropertiesService.getScriptProperties();
   const lockKey = "EXECUTION_LOCK";
 

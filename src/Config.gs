@@ -78,7 +78,7 @@ const CONFIG = {
   // - invoiceDetection: "gemini" for best privacy and accuracy, "openai" as alternative, false to disable
   // - invoicesFolderName: Using a prefix like "aaa_" ensures the folder appears at the top
   // INTERDEPENDENCY: When invoiceDetection is enabled, detected invoices are saved to invoicesFolderName
-  invoiceDetection: "gemini", // AI provider to use: "gemini" (recommended), "openai", or false to disable
+  invoiceDetection: false, // AI provider to use: "gemini" (recommended), "openai", or false to disable
   invoicesFolderName: "aaa_Facturas", // Special folder for invoices (prefix ensures it appears at top)
 
   // Invoice file types and keywords

@@ -105,6 +105,10 @@ The project is in a **stable and complete** state for its core functionality. Al
 4. **Large Attachment Handling**: Attachments over 25MB cannot be processed due to Gmail limitations
    - **Workaround**: None available; this is a Gmail API limitation
 
+5. **GCP Project Association Permission Issues**: Scripts associated with Google Cloud Platform (GCP) projects can experience permission issues
+   - **Workaround**: Create a new script without GCP association
+   - **Future Investigation**: Research why GCP association causes permission issues and if there's a better solution
+
 ### Edge Cases
 
 1. **Complex HTML Emails**: Some complex HTML emails may have embedded images that aren't properly filtered

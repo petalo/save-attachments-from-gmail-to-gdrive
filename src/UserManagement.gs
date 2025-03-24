@@ -5,7 +5,7 @@
 /**
  * Verify if a user has granted all required permissions
  *
- * @param {string} userEmail - The user's email address to verify
+ * @param {string} userEmail - The user's email address to verify. If not provided, uses current user.
  * @returns {boolean} True if the user has all required permissions
  *
  * The function follows this flow:
@@ -23,6 +23,14 @@
  * has granted the necessary permissions before attempting to process their data.
  */
 function verifyUserPermissions(userEmail) {
+  // If userEmail is not provided, use the current user's email
+  if (!userEmail) {
+    userEmail = Session.getEffectiveUser().getEmail();
+    logWithUser(
+      `No user email provided, using current user: ${userEmail}`,
+      "INFO"
+    );
+  }
   const currentUser = Session.getEffectiveUser().getEmail();
   const isCurrentUser = currentUser === userEmail;
 
@@ -103,6 +111,16 @@ function verifyUserPermissions(userEmail) {
     checkedUsers[userEmail] = result;
     scriptProperties.setProperty(checkedUsersKey, JSON.stringify(checkedUsers));
 
+    // Log the final result when called directly
+    if (!userEmail || userEmail === currentUser) {
+      logWithUser(
+        `Permission verification result for current user: ${
+          result ? "GRANTED" : "DENIED"
+        }`,
+        "INFO"
+      );
+    }
+
     return result;
   } catch (e) {
     logWithUser(
@@ -135,12 +153,22 @@ function requestPermissions() {
     logWithUser("Requesting permissions for Gmail and Drive...", "INFO");
 
     // Try to access Gmail - this will trigger the permission prompt
-    const gmailLabels = GmailApp.getUserLabels();
-    logWithUser("Gmail permissions granted", "INFO");
+    try {
+      const gmailLabels = GmailApp.getUserLabels();
+      logWithUser("Gmail permissions granted", "INFO");
+    } catch (gmailError) {
+      logWithUser(`Error accessing Gmail: ${gmailError.message}`, "ERROR");
+      return false;
+    }
 
     // Try to access Drive - this will trigger the permission prompt
-    const rootFolder = DriveApp.getRootFolder();
-    logWithUser("Drive permissions granted", "INFO");
+    try {
+      const rootFolder = DriveApp.getRootFolder();
+      logWithUser("Drive permissions granted", "INFO");
+    } catch (driveError) {
+      logWithUser(`Error accessing Drive: ${driveError.message}`, "ERROR");
+      return false;
+    }
 
     // Verify that we can access the main folder
     if (CONFIG.mainFolderId !== "YOUR_SHARED_FOLDER_ID") {
@@ -150,11 +178,13 @@ function requestPermissions() {
           `Successfully accessed main folder: ${mainFolder.getName()}`,
           "INFO"
         );
-      } catch (e) {
+      } catch (folderError) {
+        // This is not a critical error, just log it
         logWithUser(
-          `Error accessing main folder: ${e.message}. Please check the folder ID.`,
+          `Error accessing main folder: ${folderError.message}. Please check the folder ID.`,
           "ERROR"
         );
+        // Continue with the rest of the function
       }
     } else {
       logWithUser(
@@ -164,25 +194,32 @@ function requestPermissions() {
     }
 
     // Let's add the current user to the manual list if they have all permissions
-    const hasPermissions = verifyUserPermissions(userEmail);
-    if (hasPermissions) {
-      addUserToList(userEmail);
+    try {
+      const hasPermissions = verifyUserPermissions(userEmail);
+      if (hasPermissions) {
+        addUserToList(userEmail);
+        logWithUser(
+          "All required permissions have been granted successfully!",
+          "INFO"
+        );
+        logWithUser(
+          "You have been added to the users list and the script is ready to process your emails.",
+          "INFO"
+        );
+      } else {
+        logWithUser(
+          "Some permissions appear to be missing. Please run this function again.",
+          "WARNING"
+        );
+      }
+      return hasPermissions;
+    } catch (permissionError) {
       logWithUser(
-        "All required permissions have been granted successfully!",
-        "INFO"
+        `Error verifying permissions: ${permissionError.message}`,
+        "ERROR"
       );
-      logWithUser(
-        "You have been added to the users list and the script is ready to process your emails.",
-        "INFO"
-      );
-    } else {
-      logWithUser(
-        "Some permissions appear to be missing. Please run this function again.",
-        "WARNING"
-      );
+      return false;
     }
-
-    return hasPermissions;
   } catch (e) {
     logWithUser(`Error requesting permissions: ${e.message}`, "ERROR");
     return false;
