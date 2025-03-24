@@ -1,0 +1,11 @@
+# Run git-secrets to scan for secrets
+# We're only scanning staged changes to avoid false positives in documentation
+git diff --cached --name-only | xargs git secrets --scan || {
+    echo "git-secrets found potential secrets in your changes."
+    echo "If these are false positives, you can add them to .gitallowed"
+    echo "or use --no-verify to bypass this check (not recommended)."
+    exit 1
+}
+
+# Run the existing test script if all checks pass
+npm test

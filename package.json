@@ -26,7 +26,7 @@
     "status": "clasp status",
     "open": "clasp open",
     "pull": "clasp pull",
-    "test": "clasp run testFolderId",
+    "test": "",
     "test:openai": "node test-openai.js",
     "test:gemini": "node test-gemini.js",
     "test:api-keys": "node test-api-keys.js",
@@ -34,7 +34,11 @@
     "deploy:version": "npm run deploy && npm run version",
     "deploy:prod:version": "npm run deploy:prod && npm run version",
     "deploy:test:version": "npm run deploy:test && npm run version",
-    "postinstall": "echo \"\\nSetup complete! Run 'npm run build' to generate files and 'npm run deploy' to upload to Google Apps Script.\\n\""
+    "postinstall": "echo \"\\nSetup complete! Run 'npm run build' to generate files and 'npm run deploy' to upload to Google Apps Script.\\nRun 'npm run setup-git-secrets' to configure git-secrets for pre-commit checks. See GIT_SECRETS.md for details.\\n\"",
+    "prepare": "husky",
+    "setup-git-secrets": "./utils/setup_git_secrets.sh",
+    "check-secrets": "git diff --cached --name-only | xargs git secrets --scan",
+    "postprepare": "echo \"Husky installed successfully. Run 'npm run setup-git-secrets' to configure git-secrets if needed.\""
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.0",
@@ -43,6 +47,7 @@
     "googleapis": "^148.0.0"
   },
   "devDependencies": {
-    "@google/clasp": "^2.4.2"
+    "@google/clasp": "^2.4.2",
+    "husky": "^9.1.7"
   }
 }
