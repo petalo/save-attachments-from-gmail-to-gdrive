@@ -69,19 +69,46 @@ This is the quickest way to get the script running.
 
 **Purpose:**
 
-- Installation with `FOLDER_ID` pre-configured from your environment.
+- Installation with environment-specific configuration pre-configured.
+- Support for separate production and test environments.
 
 **Steps:**
 
-1. Create a `.env` file in the root directory with your `FOLDER_ID` (see `.env.example`).
+1. Set up environment-specific configuration files:
+   - Create `.env.prod` for production environment (see `.env.example`). **This file is mandatory** as production is the default environment.
+   - Optionally create `.env.test` for test environment (see `.env.example`).
+   - Include `FOLDER_ID`, `SCRIPT_ID`, and `PROCESSED_LABEL_NAME` in each file.
+
 2. Run `npm install` to install dependencies.
-3. Run `npm run build` to generate the pre-configured script in the `build` directory.
-4. Run `npm run deploy` to upload the script to Google Apps Script.
-5. Run `npm run open` to open the script in the Google Apps Script editor.
+
+3. Build and deploy for a specific environment:
+   - Production (default environment):
+     ```bash
+     npm run build:prod    # Generate production build
+     npm run deploy:prod   # Deploy to production
+     npm run build         # Same as build:prod
+     npm run deploy        # Same as deploy:prod
+     ```
+   - Test:
+     ```bash
+     npm run build:test    # Generate test build
+     npm run deploy:test   # Deploy to test
+     ```
+
+4. Run `npm run open` to open the script in the Google Apps Script editor.
+
+**Environment Configuration:**
+
+Each environment can have its own:
+- Google Drive folder (via `FOLDER_ID`)
+- Google Apps Script project (via `SCRIPT_ID`)
+- Gmail label (via `PROCESSED_LABEL_NAME`)
 
 **Ideal for:**
 
 - Development and deployment to multiple environments.
+- Testing new features without affecting production.
+- Maintaining separate configurations for different use cases.
 
 ### Modular Installation (Multiple Files)
 
@@ -128,7 +155,7 @@ This is the quickest way to get the script running.
 3. Clone this repository:
 
    ```bash
-   git clone https://github.com/yourusername/gmail-attachment-organizer.git
+   git clone https://github.com/petalo/save-attachments-from-gmail-to-gdrive.git
    cd gmail-attachment-organizer
    ```
 
@@ -526,38 +553,39 @@ This section provides guidance on resolving common issues.
 These commands are available when dependencies are installed and can be used to manage the script.
 
 ```bash
-#   Generate files in single-file and build directories
-npm run build
+#   Build commands
+npm run build              # Generate files with default environment
+npm run build:prod         # Generate files for production environment
+npm run build:test         # Generate files for test environment
 
-#   Generate files and upload them to Google Apps Script
-npm run deploy
+#   Deployment commands
+npm run deploy             # Build and deploy with default environment
+npm run deploy:prod        # Build and deploy to production environment
+npm run deploy:test        # Build and deploy to test environment
 
-#   Force upload to Google Apps Script (overwrites any changes)
-npm run deploy:force
+#   Force deployment commands (overwrites remote changes)
+npm run deploy:force       # Force deploy with default environment
+npm run deploy:prod:force  # Force deploy to production environment
+npm run deploy:test:force  # Force deploy to test environment
 
-#   Login to Google
-npm run login
+#   Version commands
+npm run version            # Create a new version in Google Apps Script
+npm run deploy:version     # Deploy and create version in a single step
+npm run deploy:prod:version # Deploy to production and create version
+npm run deploy:test:version # Deploy to test and create version
 
-#   Logout
-npm run logout
+#   Google Apps Script commands
+npm run login              # Login to Google
+npm run logout             # Logout from Google
+npm run status             # View status of files
+npm run open               # Open the script in Google Apps Script editor
+npm run pull               # Download the latest version from Google Apps Script
 
-#   View status of files
-npm run status
-
-#   Open the script in Google Apps Script editor
-npm run open
-
-#   Download the latest version of the script from Google Apps Script
-npm run pull
-
-#   Test if the folder ID is valid
-npm run test
-
-#   Create a new version of the script
-npm run version
-
-#   Upload and create version in a single step
-npm run deploy:version
+#   Testing commands
+npm run test               # Test if the folder ID is valid
+npm run test:openai        # Test OpenAI API connection
+npm run test:gemini        # Test Gemini API connection
+npm run test:api-keys      # Test all API keys
 ```
 
 ## License

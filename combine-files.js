@@ -11,14 +11,31 @@
  *
  * The script maintains a logical order of the source files to ensure
  * proper code structure and dependencies in the combined output.
+ *
+ * Environment support:
+ * - Use --env=prod for production environment (default)
+ * - Use --env=test for test environment
  */
 
 const fs = require("fs");
 const path = require("path");
 const dotenv = require("dotenv");
 
-// Load environment variables from .env file
-dotenv.config();
+// Parse command line arguments for environment
+const args = process.argv.slice(2);
+const envArg = args.find((arg) => arg.startsWith("--env="));
+const env = envArg ? envArg.split("=")[1] : "prod"; // Default to prod if not specified
+
+console.log(`Building for environment: ${env}`);
+
+// Load environment variables from the appropriate .env file
+const envPath = path.resolve(__dirname, `.env.${env}`);
+if (!fs.existsSync(envPath)) {
+  console.error(`Error: Environment file .env.${env} not found!`);
+  process.exit(1);
+}
+
+dotenv.config({ path: envPath });
 
 // Logical order of files
 const fileOrder = [
@@ -37,10 +54,10 @@ const fileOrder = [
   // Debug files are intentionally not included
 ];
 
-// Function to get project timezone from appsscript.json
+// Function to get project timezone from src/appsscript.json
 function getProjectTimezone() {
   try {
-    const appsscriptPath = path.join(__dirname, "appsscript.json");
+    const appsscriptPath = path.join(__dirname, "src", "appsscript.json");
     if (fs.existsSync(appsscriptPath)) {
       const appsscriptContent = fs.readFileSync(appsscriptPath, "utf8");
       const appsscriptJson = JSON.parse(appsscriptContent);
@@ -48,7 +65,7 @@ function getProjectTimezone() {
     }
   } catch (error) {
     console.warn(
-      `Warning: Could not read timezone from appsscript.json: ${error.message}`
+      `Warning: Could not read timezone from src/appsscript.json: ${error.message}`
     );
   }
   return "UTC";
@@ -199,6 +216,14 @@ ${content}`;
           `geminiApiKey: "${process.env.GEMINI_API_KEY}"`
         );
       }
+
+      // Replace processedLabelName if available
+      if (process.env.PROCESSED_LABEL_NAME) {
+        buildContent = buildContent.replace(
+          'processedLabelName: "GDrive_Processed"',
+          `processedLabelName: "${process.env.PROCESSED_LABEL_NAME}"`
+        );
+      }
     }
     fs.appendFileSync(outputFileBuild, buildContent);
   } else {
@@ -209,23 +234,8 @@ ${content}`;
 });
 
 console.log(`\nCombined files created:`);
-console.log(`- ${outputFileSingle} (with placeholder FOLDER_ID)`);
-
-// Ocultar parte del FOLDER_ID, mostrar solo 4 caracteres al principio y al final
-let displayFolderId = "not found";
-if (process.env.FOLDER_ID) {
-  const id = process.env.FOLDER_ID;
-  if (id.length > 8) {
-    displayFolderId = `${id.substring(0, 4)}...${id.substring(id.length - 4)}`;
-  } else {
-    displayFolderId = id;
-  }
-  console.log(
-    `- ${outputFileBuild} (with FOLDER_ID from .env: ${displayFolderId})`
-  );
-} else {
-  console.log(`- ${outputFileBuild} (FOLDER_ID not found in .env file)`);
-}
+console.log(`- single-file/Code.gs (with PLACEHOLDERS)`);
+console.log(`- build/Code.gs (with VALUES)`);
 
 // Function to get an appropriate description for each module
 function getModuleDescription(moduleName) {
@@ -247,9 +257,33 @@ function getModuleDescription(moduleName) {
   return descriptions[moduleName] || moduleName;
 }
 
-// Copy appsscript.json to both directories
+// Generate .clasp.json file with the correct scriptId
+if (process.env.SCRIPT_ID) {
+  const claspConfig = {
+    scriptId: process.env.SCRIPT_ID,
+    rootDir: "build",
+    scriptExtensions: [".js", ".gs"],
+    htmlExtensions: [".html"],
+    jsonExtensions: [".json"],
+    filePushOrder: [],
+    skipSubdirectories: false,
+  };
+
+  fs.writeFileSync(
+    path.join(__dirname, ".clasp.json"),
+    JSON.stringify(claspConfig, null, 2)
+  );
+
+  console.log(`\nUpdated .clasp.json for ${env} environment`);
+} else {
+  console.warn(
+    "Warning! SCRIPT_ID not found in environment variables. .clasp.json not updated."
+  );
+}
+
+// Copy appsscript.json from src/ to both directories
 try {
-  const appsscriptPath = path.join(__dirname, "appsscript.json");
+  const appsscriptPath = path.join(__dirname, "src", "appsscript.json");
   if (fs.existsSync(appsscriptPath)) {
     // Copy to single-file directory
     fs.copyFileSync(
@@ -262,7 +296,7 @@ try {
 
     console.log("appsscript.json copied to both directories");
   } else {
-    console.warn("Warning! appsscript.json not found in workspace root");
+    console.warn("Warning! appsscript.json not found in src/ directory");
   }
 } catch (error) {
   console.error(`Error copying appsscript.json: ${error.message}`);

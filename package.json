@@ -3,10 +3,24 @@
   "version": "0.1.0",
   "description": "Google Apps Script to automatically organize Gmail attachments in Google Drive",
   "main": "combine-files.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/petalo/save-attachments-from-gmail-to-gdrive"
+  },
+  "homepage": "https://github.com/petalo/save-attachments-from-gmail-to-gdrive#readme",
+  "bugs": {
+    "url": "https://github.com/petalo/save-attachments-from-gmail-to-gdrive/issues"
+  },
   "scripts": {
     "build": "node combine-files.js",
+    "build:prod": "node combine-files.js --env=prod",
+    "build:test": "node combine-files.js --env=test",
     "deploy": "node combine-files.js && clasp push",
+    "deploy:prod": "npm run build:prod && clasp push",
+    "deploy:test": "npm run build:test && clasp push",
     "deploy:force": "node combine-files.js && clasp push -f",
+    "deploy:prod:force": "npm run build:prod && clasp push -f",
+    "deploy:test:force": "npm run build:test && clasp push -f",
     "login": "clasp login",
     "logout": "clasp logout",
     "status": "clasp status",
@@ -18,6 +32,8 @@
     "test:api-keys": "node test-api-keys.js",
     "version": "clasp version \"Automated deploy $(date)\"",
     "deploy:version": "npm run deploy && npm run version",
+    "deploy:prod:version": "npm run deploy:prod && npm run version",
+    "deploy:test:version": "npm run deploy:test && npm run version",
     "postinstall": "echo \"\\nSetup complete! Run 'npm run build' to generate files and 'npm run deploy' to upload to Google Apps Script.\\n\""
   },
   "dependencies": {

@@ -1,5 +1,5 @@
 {
-  "scriptId": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "scriptId": "your_script_id_here",
   "rootDir": "build",
   "scriptExtensions": [".js", ".gs"],
   "htmlExtensions": [".html"],

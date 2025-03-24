@@ -39,4 +39,4 @@ const CONFIG = {
 
 ## For more information
 
-See the [complete repository](https://github.com/your-username/gmail-attachment-organizer) for more detailed documentation and advanced debugging features. 
+See the [complete repository](https://github.com/petalo/save-attachments-from-gmail-to-gdrive) for more detailed documentation and advanced debugging features.
