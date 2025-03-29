@@ -38,8 +38,8 @@ if (!fs.existsSync(envPath)) {
 
   if (!fs.existsSync(envPath)) {
     console.error(`Error: No environment file found (.env.${env} or .env)!`);
-  process.exit(1);
-}
+    process.exit(1);
+  }
 }
 
 console.log(`Loading environment variables from: ${envPath}`);
@@ -77,6 +77,7 @@ const fileOrder = [
   "HistoricalPatterns.gs", // Historical pattern analysis for invoice detection
   "OpenAIDetection.gs", // OpenAI Detection for invoice analysis (legacy)
   "GeminiDetection.gs", // Gemini Detection for invoice analysis (recommended)
+  "InvoiceDetection.gs", // Email-based invoice detection logic
   "VerifyAPIKeys.gs", // API key verification utilities
   "UserManagement.gs", // User management
   "AttachmentFilters.gs", // Attachment filters
@@ -85,6 +86,14 @@ const fileOrder = [
   "GmailProcessing.gs", // Gmail processing
   "Main.gs", // Main functions
   // Debug files are intentionally not included
+];
+
+// Files to copy separately (not merged into Code.gs)
+// This includes both .gs files that should remain separate and other file types
+const filesToCopyDirectly = [
+  "InvoiceSenders.gs", // List of invoice senders for email-based detection
+  "appsscript.json", // Project manifest
+  // Add any other files that should be copied directly here
 ];
 
 // Function to get project timezone from src/appsscript.json
@@ -159,7 +168,7 @@ const header = `/**
  * Key features:
  * - Automatic organization by sender domain
  * - Configurable filters for file types and sizes
- * - AI-based invoice detection using Google Gemini or OpenAI
+ * - Multiple invoice detection methods (AI-powered and email-based)
  * - Privacy-focused metadata analysis for invoice detection
  * - Scheduled processing via time-based triggers
  * - Multi-user support with permission management
@@ -294,6 +303,7 @@ function getModuleDescription(moduleName) {
     HISTORICALPATTERNS: "HISTORICAL PATTERN ANALYSIS",
     OPENAIDETECTION: "OPENAI DETECTION",
     GEMINIDETECTION: "GEMINI DETECTION",
+    INVOICEDETECTION: "EMAIL-BASED INVOICE DETECTION",
     VERIFYAPIKEYS: "API KEY VERIFICATION",
     USERMANAGEMENT: "USER MANAGEMENT",
     ATTACHMENTFILTERS: "ATTACHMENT FILTERS",
@@ -330,23 +340,26 @@ if (process.env.SCRIPT_ID) {
   );
 }
 
-// Copy appsscript.json from src/ to both directories
-try {
-  const appsscriptPath = path.join(__dirname, "src", "appsscript.json");
-  if (fs.existsSync(appsscriptPath)) {
-    // Copy to single-file directory
-    fs.copyFileSync(
-      appsscriptPath,
-      path.join(singleFileDir, "appsscript.json")
-    );
+// Copy files that should remain separate (not merged into Code.gs)
+console.log("\nCopying files directly (not merged into Code.gs):");
+filesToCopyDirectly.forEach((filename) => {
+  try {
+    const filePath = path.join(__dirname, "src", filename);
 
-    // Copy to build directory
-    fs.copyFileSync(appsscriptPath, path.join(buildDir, "appsscript.json"));
+    if (fs.existsSync(filePath)) {
+      // Copy to single-file directory
+      fs.copyFileSync(filePath, path.join(singleFileDir, filename));
 
-    console.log("appsscript.json copied to both directories");
-  } else {
-    console.warn("Warning! appsscript.json not found in src/ directory");
+      // Copy to build directory
+      fs.copyFileSync(filePath, path.join(buildDir, filename));
+
+      console.log(`- ${filename} copied to both directories`);
+    } else {
+      console.warn(
+        `Warning! The file src/${filename} does not exist and will be skipped.`
+      );
+    }
+  } catch (error) {
+    console.error(`Error copying ${filename}: ${error.message}`);
   }
-} catch (error) {
-  console.error(`Error copying appsscript.json: ${error.message}`);
-}
+});

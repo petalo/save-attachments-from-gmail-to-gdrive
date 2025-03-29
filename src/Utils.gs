@@ -310,12 +310,20 @@ function getUniqueFilename(originalFilename, folder) {
 
 /**
  * Extracts the domain from an email address
+ * Handles both simple email addresses and those with display names
  *
  * @param {string} email - The email address to extract the domain from
  * @returns {string} The domain part of the email address, or "unknown" if not found
  */
 function extractDomain(email) {
-  const domainMatch = email.match(/@([\w.-]+)/);
+  if (!email) return "unknown";
+
+  // First, try to extract email from "Display Name <email@domain.com>" format
+  const angleMatch = email.match(/<([^>]+)>/);
+  const cleanEmail = angleMatch ? angleMatch[1] : email;
+
+  // Now extract the domain from the clean email
+  const domainMatch = cleanEmail.match(/@([\w.-]+)/);
   return domainMatch ? domainMatch[1] : "unknown";
 }
 

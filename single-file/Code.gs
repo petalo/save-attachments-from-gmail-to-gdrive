@@ -9,7 +9,7 @@
  * Key features:
  * - Automatic organization by sender domain
  * - Configurable filters for file types and sizes
- * - AI-based invoice detection using Google Gemini or OpenAI
+ * - Multiple invoice detection methods (AI-powered and email-based)
  * - Privacy-focused metadata analysis for invoice detection
  * - Scheduled processing via time-based triggers
  * - Multi-user support with permission management
@@ -93,11 +93,11 @@ const CONFIG = {
 
   // Main invoice detection settings
   // RECOMMENDED VALUES:
-  // - invoiceDetection: "gemini" for best privacy and accuracy, "openai" as alternative, false to disable
+  // - invoiceDetection: "gemini" for best privacy and accuracy, "openai" as alternative, "email" for sender-based detection, false to disable
   // - invoicesFolderName: Using a prefix like "aaa_" ensures the folder appears at the top
   // INTERDEPENDENCY: When invoiceDetection is enabled, detected invoices are saved to invoicesFolderName
-  invoiceDetection: "gemini", // AI provider to use: "gemini" (recommended), "openai", or false to disable
-  invoicesFolderName: "aaa_Facturas", // Special folder for invoices (prefix ensures it appears at top)
+  invoiceDetection: false, // AI provider to use: "gemini" (recommended), "openai", "email", or false to disable
+  invoicesFolderName: "aaa_Invoices", // Special folder for invoices (prefix ensures it appears at top)
 
   // Invoice file types and keywords
   // INTERDEPENDENCY: invoiceFileTypes is used by onlyAnalyzePDFs in SHARED AI SETTINGS
@@ -522,12 +522,20 @@ function getUniqueFilename(originalFilename, folder) {
 
 /**
  * Extracts the domain from an email address
+ * Handles both simple email addresses and those with display names
  *
  * @param {string} email - The email address to extract the domain from
  * @returns {string} The domain part of the email address, or "unknown" if not found
  */
 function extractDomain(email) {
-  const domainMatch = email.match(/@([\w.-]+)/);
+  if (!email) return "unknown";
+
+  // First, try to extract email from "Display Name <email@domain.com>" format
+  const angleMatch = email.match(/<([^>]+)>/);
+  const cleanEmail = angleMatch ? angleMatch[1] : email;
+
+  // Now extract the domain from the clean email
+  const domainMatch = cleanEmail.match(/@([\w.-]+)/);
   return domainMatch ? domainMatch[1] : "unknown";
 }
 
@@ -1690,6 +1698,126 @@ var GeminiDetection = {
   isInvoiceWithGemini: isInvoiceWithGemini,
   testGeminiConnection: testGeminiConnection,
   storeGeminiApiKey: storeGeminiApiKey,
+};
+
+//=============================================================================
+// INVOICEDETECTION - EMAIL-BASED INVOICE DETECTION
+//=============================================================================
+
+/**
+ * Checks if a sender is in the invoice senders list
+ *
+ * @param {string} sender - The email address of the sender
+ * @returns {boolean} True if the sender is in the list
+ */
+function isInvoiceSender(sender) {
+  try {
+    if (!sender) return false;
+
+    // Extract email from "Display Name <email@domain.com>" format if needed
+    const angleMatch = sender.match(/<([^>]+)>/);
+    const cleanSender = angleMatch ? angleMatch[1] : sender;
+
+    // Normalize the email to lowercase
+    const normalizedSender = cleanSender.toLowerCase();
+
+    // Extract the domain
+    const domain = extractDomain(normalizedSender);
+
+    // Extract the username (part before @)
+    const atIndex = normalizedSender.indexOf("@");
+    const username = atIndex > 0 ? normalizedSender.substring(0, atIndex) : "";
+
+    // Check for matches
+    for (const entry of INVOICE_SENDERS) {
+      const normalizedEntry = entry.toLowerCase();
+
+      // Case 1: Exact email match
+      if (normalizedSender === normalizedEntry) {
+        logWithUser(`Exact invoice sender match: ${sender}`, "INFO");
+        return true;
+      }
+
+      // Case 2: Domain-only match (entry is just a domain without @)
+      if (!normalizedEntry.includes("@") && domain === normalizedEntry) {
+        logWithUser(`Domain match for invoice sender: ${domain}`, "INFO");
+        return true;
+      }
+
+      // Case 3: Full wildcard match (*@domain.com)
+      if (
+        normalizedEntry.startsWith("*@") &&
+        domain === normalizedEntry.substring(2)
+      ) {
+        logWithUser(
+          `Wildcard domain match for invoice sender: ${domain}`,
+          "INFO"
+        );
+        return true;
+      }
+
+      // Case 4: Pattern matching with wildcards
+      if (normalizedEntry.includes("*") && normalizedEntry.includes("@")) {
+        // Extract pattern parts
+        const entryAtIndex = normalizedEntry.indexOf("@");
+        const entryUsername = normalizedEntry.substring(0, entryAtIndex);
+        const entryDomain = normalizedEntry.substring(entryAtIndex + 1);
+
+        // Only proceed if domains match
+        if (domain === entryDomain) {
+          // Handle prefix*@domain.com
+          if (entryUsername.endsWith("*") && !entryUsername.startsWith("*")) {
+            const prefix = entryUsername.substring(0, entryUsername.length - 1);
+            if (username.startsWith(prefix)) {
+              logWithUser(
+                `Prefix wildcard match for invoice sender: ${sender}`,
+                "INFO"
+              );
+              return true;
+            }
+          }
+          // Handle *suffix@domain.com
+          else if (
+            entryUsername.startsWith("*") &&
+            !entryUsername.endsWith("*")
+          ) {
+            const suffix = entryUsername.substring(1);
+            if (username.endsWith(suffix)) {
+              logWithUser(
+                `Suffix wildcard match for invoice sender: ${sender}`,
+                "INFO"
+              );
+              return true;
+            }
+          }
+          // Handle prefix*suffix@domain.com
+          else if (entryUsername.includes("*")) {
+            const parts = entryUsername.split("*");
+            const prefix = parts[0];
+            const suffix = parts[1];
+
+            if (username.startsWith(prefix) && username.endsWith(suffix)) {
+              logWithUser(
+                `Prefix-suffix wildcard match for invoice sender: ${sender}`,
+                "INFO"
+              );
+              return true;
+            }
+          }
+        }
+      }
+    }
+
+    return false;
+  } catch (error) {
+    logWithUser(`Error checking invoice sender: ${error.message}`, "ERROR");
+    return false;
+  }
+}
+
+// Export the function for use in other modules
+var InvoiceDetection = {
+  isInvoiceSender: isInvoiceSender,
 };
 
 //=============================================================================
@@ -2966,10 +3094,11 @@ function isInvoiceMessage(message) {
   if (CONFIG.invoiceDetection === false) return false;
 
   try {
-    // Check if any AI detection is enabled
+    // Check if any detection method is enabled
     if (
       CONFIG.invoiceDetection === "gemini" ||
-      CONFIG.invoiceDetection === "openai"
+      CONFIG.invoiceDetection === "openai" ||
+      CONFIG.invoiceDetection === "email"
     ) {
       // Check if message has attachments and if any are PDFs (with stricter checking)
       if (CONFIG.onlyAnalyzePDFs) {
@@ -3010,6 +3139,16 @@ function isInvoiceMessage(message) {
       if (CONFIG.skipAIForDomains && CONFIG.skipAIForDomains.includes(domain)) {
         logWithUser(`Skipping AI for domain ${domain}, using keywords`, "INFO");
         return checkKeywords(message);
+      }
+
+      // NEW: Check for email-based detection
+      if (CONFIG.invoiceDetection === "email") {
+        const isInvoice = InvoiceDetection.isInvoiceSender(sender);
+        logWithUser(
+          `Email-based invoice detection result: ${isInvoice}`,
+          "INFO"
+        );
+        return isInvoice;
       }
 
       // Try Gemini detection first if enabled

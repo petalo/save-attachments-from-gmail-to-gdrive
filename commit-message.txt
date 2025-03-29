@@ -1,0 +1,31 @@
+feat(detection): add email-based invoice detection
+
+# Email-Based Invoice Detection
+
+This commit adds a new method for detecting invoices based on the sender's email address. This approach is more privacy-focused than AI-based detection and can be more efficient for known invoice senders.
+
+## Key Changes
+
+- Enhanced `extractDomain` function in `Utils.gs` to properly handle email addresses with display names (e.g., "Company Name <email@domain.com>")
+- Updated `isInvoiceSender` function in `InvoiceDetection.gs` to extract email addresses from the "From" field when they include display names
+- Added support for various matching patterns in the invoice senders list:
+  - Full domains (e.g., "example.com")
+  - Explicit wildcard domains (e.g., "*@example.com")
+  - Specific email addresses (e.g., "billing@example.com")
+  - Prefix wildcards (e.g., "invoice*@example.com")
+  - Suffix wildcards (e.g., "*-noreply@example.com")
+  - Prefix-suffix wildcards (e.g., "invoice*info@example.com")
+- Added configuration option `invoiceDetection: "email"` to enable this detection method
+- Created `InvoiceSenders.gs` file to store the list of known invoice senders
+- Updated build process to properly handle the `INVOICES_FOLDER_NAME` environment variable
+
+## Benefits
+
+- More privacy-focused than AI-based detection (no email content analysis)
+- Faster processing as it only requires checking the sender
+- More predictable results for known senders
+- Can be used as a fallback when AI-based detection is unavailable or fails
+
+## Usage
+
+Set `invoiceDetection: "email"` in the configuration to enable email-based invoice detection. Add known invoice senders to the `INVOICE_SENDERS` array in `InvoiceSenders.gs`.

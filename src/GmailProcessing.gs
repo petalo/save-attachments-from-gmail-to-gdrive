@@ -13,10 +13,11 @@ function isInvoiceMessage(message) {
   if (CONFIG.invoiceDetection === false) return false;
 
   try {
-    // Check if any AI detection is enabled
+    // Check if any detection method is enabled
     if (
       CONFIG.invoiceDetection === "gemini" ||
-      CONFIG.invoiceDetection === "openai"
+      CONFIG.invoiceDetection === "openai" ||
+      CONFIG.invoiceDetection === "email"
     ) {
       // Check if message has attachments and if any are PDFs (with stricter checking)
       if (CONFIG.onlyAnalyzePDFs) {
@@ -57,6 +58,16 @@ function isInvoiceMessage(message) {
       if (CONFIG.skipAIForDomains && CONFIG.skipAIForDomains.includes(domain)) {
         logWithUser(`Skipping AI for domain ${domain}, using keywords`, "INFO");
         return checkKeywords(message);
+      }
+
+      // NEW: Check for email-based detection
+      if (CONFIG.invoiceDetection === "email") {
+        const isInvoice = InvoiceDetection.isInvoiceSender(sender);
+        logWithUser(
+          `Email-based invoice detection result: ${isInvoice}`,
+          "INFO"
+        );
+        return isInvoice;
       }
 
       // Try Gemini detection first if enabled

@@ -75,11 +75,11 @@ const CONFIG = {
 
   // Main invoice detection settings
   // RECOMMENDED VALUES:
-  // - invoiceDetection: "gemini" for best privacy and accuracy, "openai" as alternative, false to disable
+  // - invoiceDetection: "gemini" for best privacy and accuracy, "openai" as alternative, "email" for sender-based detection, false to disable
   // - invoicesFolderName: Using a prefix like "aaa_" ensures the folder appears at the top
   // INTERDEPENDENCY: When invoiceDetection is enabled, detected invoices are saved to invoicesFolderName
-  invoiceDetection: false, // AI provider to use: "gemini" (recommended), "openai", or false to disable
-  invoicesFolderName: "aaa_Facturas", // Special folder for invoices (prefix ensures it appears at top)
+  invoiceDetection: false, // AI provider to use: "gemini" (recommended), "openai", "email", or false to disable
+  invoicesFolderName: "aaa_Invoices", // Special folder for invoices (prefix ensures it appears at top)
 
   // Invoice file types and keywords
   // INTERDEPENDENCY: invoiceFileTypes is used by onlyAnalyzePDFs in SHARED AI SETTINGS
