@@ -29,13 +29,46 @@ const env = envArg ? envArg.split("=")[1] : "prod"; // Default to prod if not sp
 console.log(`Building for environment: ${env}`);
 
 // Load environment variables from the appropriate .env file
-const envPath = path.resolve(__dirname, `.env.${env}`);
+let envPath = path.resolve(__dirname, `.env.${env}`);
+
+// If the environment-specific file doesn't exist, try the default .env file
 if (!fs.existsSync(envPath)) {
-  console.error(`Error: Environment file .env.${env} not found!`);
+  console.log(`Environment file .env.${env} not found, trying .env instead`);
+  envPath = path.resolve(__dirname, ".env");
+
+  if (!fs.existsSync(envPath)) {
+    console.error(`Error: No environment file found (.env.${env} or .env)!`);
   process.exit(1);
 }
+}
 
+console.log(`Loading environment variables from: ${envPath}`);
+// Check if the file exists and is readable
+try {
+  const envContent = fs.readFileSync(envPath, "utf8");
+  console.log(`Environment file content:\n${envContent}`);
+} catch (error) {
+  console.error(`Error reading environment file: ${error.message}`);
+}
+
+// Try loading with dotenv
 dotenv.config({ path: envPath });
+
+// Debug: Print loaded environment variables
+console.log("Loaded environment variables:");
+console.log(`FOLDER_ID: ${process.env.FOLDER_ID || "not set"}`);
+console.log(
+  `OPENAI_API_KEY: ${process.env.OPENAI_API_KEY ? "set (masked)" : "not set"}`
+);
+console.log(
+  `GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? "set (masked)" : "not set"}`
+);
+console.log(
+  `PROCESSED_LABEL_NAME: ${process.env.PROCESSED_LABEL_NAME || "not set"}`
+);
+console.log(
+  `INVOICES_FOLDER_NAME: ${process.env.INVOICES_FOLDER_NAME || "not set"}`
+);
 
 // Logical order of files
 const fileOrder = [
@@ -193,35 +226,51 @@ ${content}`;
     // Create a version for build (with environment variables from .env)
     let buildContent = content;
     if (filename === "Config.gs") {
+      // Replace configuration values with environment variables using regex
+      // This approach is more robust as it doesn't rely on specific default values
+
       // Replace FOLDER_ID if available
       if (process.env.FOLDER_ID) {
+        const mainFolderIdRegex = /(mainFolderId:\s*")[^"]*(")/;
         buildContent = buildContent.replace(
-          'mainFolderId: "__FOLDER_ID__"',
-          `mainFolderId: "${process.env.FOLDER_ID}"`
+          mainFolderIdRegex,
+          `$1${process.env.FOLDER_ID}$2`
         );
       }
 
       // Replace OPENAI_API_KEY if available
       if (process.env.OPENAI_API_KEY) {
+        const openAIApiKeyRegex = /(openAIApiKey:\s*")[^"]*(")/;
         buildContent = buildContent.replace(
-          'openAIApiKey: "__OPENAI_API_KEY__"',
-          `openAIApiKey: "${process.env.OPENAI_API_KEY}"`
+          openAIApiKeyRegex,
+          `$1${process.env.OPENAI_API_KEY}$2`
         );
       }
 
       // Replace GEMINI_API_KEY if available
       if (process.env.GEMINI_API_KEY) {
+        const geminiApiKeyRegex = /(geminiApiKey:\s*")[^"]*(")/;
         buildContent = buildContent.replace(
-          'geminiApiKey: "__GEMINI_API_KEY__"',
-          `geminiApiKey: "${process.env.GEMINI_API_KEY}"`
+          geminiApiKeyRegex,
+          `$1${process.env.GEMINI_API_KEY}$2`
         );
       }
 
       // Replace processedLabelName if available
       if (process.env.PROCESSED_LABEL_NAME) {
+        const processedLabelNameRegex = /(processedLabelName:\s*")[^"]*(")/;
         buildContent = buildContent.replace(
-          'processedLabelName: "GDrive_Processed"',
-          `processedLabelName: "${process.env.PROCESSED_LABEL_NAME}"`
+          processedLabelNameRegex,
+          `$1${process.env.PROCESSED_LABEL_NAME}$2`
+        );
+      }
+
+      // Replace invoicesFolderName if available
+      if (process.env.INVOICES_FOLDER_NAME) {
+        const invoicesFolderNameRegex = /(invoicesFolderName:\s*")[^"]*(")/;
+        buildContent = buildContent.replace(
+          invoicesFolderNameRegex,
+          `$1${process.env.INVOICES_FOLDER_NAME}$2`
         );
       }
     }
