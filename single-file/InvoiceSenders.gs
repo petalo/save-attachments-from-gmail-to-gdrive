@@ -43,9 +43,11 @@ const INVOICE_SENDERS = [
 
   // Specific email addresses
   "billing@box.com",
-  "no_reply@am.atlassian.com",
-  "invoice@travelperk.com",
+  "facturacion@cuentica.com",
+  "fiscal@tandemasesores.es",
   "help@paddle.com",
+  "invoice@travelperk.com",
+  "no_reply@am.atlassian.com",
   "payments-noreply@google.com",
 
   // Special cases with domain patterns
