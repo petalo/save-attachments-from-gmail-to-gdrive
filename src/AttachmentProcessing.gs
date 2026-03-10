@@ -3,22 +3,9 @@
  */
 
 /**
- * Builds a stable script-property key for an attachment source ID in a folder.
- *
- * @param {string} sourceAttachmentId - Deterministic source attachment ID
- * @param {string} folderId - Destination folder ID
- * @returns {string|null} Property key or null if inputs are missing
- */
-function buildAttachmentSourceIndexKey(sourceAttachmentId, folderId) {
-  if (!sourceAttachmentId || !folderId) return null;
-  const raw = `${sourceAttachmentId}|${folderId}`;
-  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, raw);
-  const encoded = Utilities.base64EncodeWebSafe(digest).replace(/=+$/, "");
-  return `ATTACHMENT_SOURCE_${encoded}`;
-}
-
-/**
- * Builds description metadata to persist source linkage.
+ * Builds description metadata to persist source linkage in the Drive file.
+ * The source_attachment_id field is the primary dedup key across runs,
+ * including renamed files.
  *
  * @param {Date} emailDate - Original email date
  * @param {string|null} sourceAttachmentId - Deterministic source attachment ID
@@ -33,159 +20,123 @@ function buildAttachmentMetadata(emailDate, sourceAttachmentId) {
 }
 
 /**
- * Returns an indexed file for a sourceAttachmentId/folder if it exists and is valid.
+ * Searches a Drive folder for a file whose description contains the given
+ * sourceAttachmentId. Used as a fallback dedup check for files that were
+ * renamed due to name collisions in a previous run.
  *
  * @param {string|null} sourceAttachmentId - Deterministic source attachment ID
- * @param {Folder} folder - Destination folder
- * @returns {DriveFile|null} Existing file from index or null
+ * @param {Folder} folder - Drive folder to search in
+ * @returns {DriveFile|null} Matching file or null
  */
-function resolveIndexedAttachment(sourceAttachmentId, folder) {
+function findFileBySourceId(sourceAttachmentId, folder) {
   if (!sourceAttachmentId) return null;
-
-  const folderId = folder.getId();
-  const key = buildAttachmentSourceIndexKey(sourceAttachmentId, folderId);
-  if (!key) return null;
-
-  const scriptProperties = PropertiesService.getScriptProperties();
-  const fileId = scriptProperties.getProperty(key);
-  if (!fileId) return null;
-
   try {
-    const file = DriveApp.getFileById(fileId);
-    const parents = file.getParents();
-    while (parents.hasNext()) {
-      if (parents.next().getId() === folderId) {
-        return file;
-      }
-    }
-
-    // Indexed file is no longer in folder, clear stale index.
-    scriptProperties.deleteProperty(key);
-    return null;
+    const results = DriveApp.searchFiles(
+      `'${folder.getId()}' in parents and description contains 'source_attachment_id=${sourceAttachmentId}'`
+    );
+    return results.hasNext() ? results.next() : null;
   } catch (e) {
-    // Indexed file was deleted or inaccessible, clear stale index.
-    logWithUser(`resolveIndexedAttachment: cleared stale index for key ${key}: ${e.message}`, "DEBUG");
-    scriptProperties.deleteProperty(key);
+    logWithUser(
+      `findFileBySourceId: Drive search failed: ${e.message}`,
+      "WARNING"
+    );
     return null;
   }
 }
 
 /**
- * Registers sourceAttachmentId -> fileId mapping for a folder.
+ * Saves an attachment to a Drive folder with two-stage duplicate detection.
  *
- * @param {string|null} sourceAttachmentId - Deterministic source attachment ID
- * @param {Folder} folder - Destination folder
- * @param {DriveFile} file - Saved or existing file
- */
-function registerAttachmentSource(sourceAttachmentId, folder, file) {
-  if (!sourceAttachmentId || !file) return;
-
-  const key = buildAttachmentSourceIndexKey(sourceAttachmentId, folder.getId());
-  if (!key) return;
-
-  PropertiesService.getScriptProperties().setProperty(key, file.getId());
-}
-
-/**
- * Saves an attachment to the appropriate folder based on the sender's domain
+ * Dedup strategy (in order of cost):
+ * 1. Filename + size match in folder → duplicate, skip (cheap: one Drive folder scan)
+ * 2. Drive description search by source_attachment_id → duplicate, skip
+ *    (only reached on name collision or missing file — uncommon)
+ * 3. No duplicate found → save as new file
+ *
+ * The source_attachment_id is always persisted in the file description so
+ * that future runs can detect duplicates even if the filename changes.
  *
  * @param {GmailAttachment} attachment - The email attachment
  * @param {GmailMessage} message - The email message containing the attachment
  * @param {Folder} domainFolder - The Google Drive folder for the domain
  * @param {Object} options - Optional settings (sourceAttachmentId)
- * @returns {Object} Result object with success status and saved file (if successful)
- *
- * The function follows this flow:
- * 1. Extracts attachment name and size for logging
- * 2. Checks if a file with the same name already exists in the domain folder
- * 3. If a file exists with the same name:
- *    - Compares file sizes to detect duplicates
- *    - If sizes match, considers it a duplicate and returns the existing file
- *    - If sizes differ, generates a unique filename to avoid collision
- * 4. Creates the file in Google Drive (either with original or unique name)
- * 5. Returns a detailed result object with success status and file reference
- *
- * This function handles duplicate detection and collision avoidance to ensure
- * no attachments are lost when processing emails.
+ * @returns {Object} Result object: { success, duplicate, file } or { success: false, error }
  */
 function saveAttachment(attachment, message, domainFolder, options = {}) {
   try {
     const attachmentName = attachment.getName();
     const attachmentSize = Math.round(attachment.getSize() / 1024);
     const sourceAttachmentId = options.sourceAttachmentId || null;
+    const emailDate = message.getDate();
 
-    // Log once at start, but don't repeat filter checks in logs
     logWithUser(
       `Processing attachment: ${attachmentName} (${attachmentSize}KB)`,
       "DEBUG"
     );
-
-    // Get the date of the email for logging purposes
-    const emailDate = message.getDate();
     logWithUser(`Email date: ${emailDate.toISOString()}`, "DEBUG");
 
-    // Fast checkpoint lookup by deterministic source ID + folder
-    const indexedFile = resolveIndexedAttachment(sourceAttachmentId, domainFolder);
-    if (indexedFile) {
-      logWithUser(
-        `Attachment already indexed for source ID, skipping save: ${attachmentName}`,
-        "INFO"
-      );
-      return { success: true, duplicate: true, file: indexedFile };
-    }
-
-    // Skip filter logging details here - we've already decided to save this file
-
-    // Check if file already exists in the domain folder
+    // --- Stage 1: filename + size match (fast path) ---
     const existingFiles = domainFolder.getFilesByName(attachmentName);
-
     if (existingFiles.hasNext()) {
-      // Check if it's exactly the same file (size-based check for simplicity)
       const existingFile = existingFiles.next();
       const existingFileSize = Math.round(existingFile.getSize() / 1024);
 
       if (existingFileSize === attachmentSize) {
         logWithUser(
-          `File already exists with same size: ${attachmentName}`,
+          `Duplicate detected by name+size: ${attachmentName}`,
           "INFO"
         );
-        registerAttachmentSource(sourceAttachmentId, domainFolder, existingFile);
         return { success: true, duplicate: true, file: existingFile };
-      } else {
-        // If sizes don't match, rename with timestamp to avoid collision
-        const newName = getUniqueFilename(attachmentName, domainFolder);
-        logWithUser(`Renaming to avoid collision: ${newName}`, "INFO");
-        const savedFile = domainFolder.createFile(
-          attachment.copyBlob().setName(newName)
-        );
+      }
 
-        // Add date info to the description for reference
-        savedFile.setDescription(
-          buildAttachmentMetadata(emailDate, sourceAttachmentId)
-        );
-        registerAttachmentSource(sourceAttachmentId, domainFolder, savedFile);
-
+      // Name collision (same name, different size): check if this exact
+      // attachment was already saved under a renamed filename.
+      const renamedFile = findFileBySourceId(sourceAttachmentId, domainFolder);
+      if (renamedFile) {
         logWithUser(
-          `Successfully saved: ${newName} in ${domainFolder.getName()}`,
+          `Duplicate detected by source_attachment_id (renamed file): ${renamedFile.getName()}`,
           "INFO"
         );
-        return { success: true, duplicate: false, file: savedFile };
+        return { success: true, duplicate: true, file: renamedFile };
       }
-    } else {
-      // Save the file normally
-      const savedFile = domainFolder.createFile(attachment);
 
-      // Add date info to the description for reference
-      savedFile.setDescription(buildAttachmentMetadata(emailDate, sourceAttachmentId));
-      registerAttachmentSource(sourceAttachmentId, domainFolder, savedFile);
-
+      // Genuine new attachment with a name collision → rename and save.
+      const newName = getUniqueFilename(attachmentName, domainFolder);
+      logWithUser(`Name collision, saving as: ${newName}`, "INFO");
+      const savedFile = domainFolder.createFile(
+        attachment.copyBlob().setName(newName)
+      );
+      savedFile.setDescription(
+        buildAttachmentMetadata(emailDate, sourceAttachmentId)
+      );
       logWithUser(
-        `Successfully saved: ${attachmentName} in ${domainFolder.getName()}`,
+        `Successfully saved: ${newName} in ${domainFolder.getName()}`,
         "INFO"
       );
-
       return { success: true, duplicate: false, file: savedFile };
     }
+
+    // --- Stage 2: no file by that name — check description as safety net ---
+    // Handles edge cases where the file exists under a different name.
+    const fileBySourceId = findFileBySourceId(sourceAttachmentId, domainFolder);
+    if (fileBySourceId) {
+      logWithUser(
+        `Duplicate detected by source_attachment_id (different name): ${fileBySourceId.getName()}`,
+        "INFO"
+      );
+      return { success: true, duplicate: true, file: fileBySourceId };
+    }
+
+    // --- Stage 3: no duplicate found → save normally ---
+    const savedFile = domainFolder.createFile(attachment);
+    savedFile.setDescription(
+      buildAttachmentMetadata(emailDate, sourceAttachmentId)
+    );
+    logWithUser(
+      `Successfully saved: ${attachmentName} in ${domainFolder.getName()}`,
+      "INFO"
+    );
+    return { success: true, duplicate: false, file: savedFile };
   } catch (error) {
     logWithUser(
       `Error saving attachment ${attachment.getName()}: ${error.message}`,
@@ -206,16 +157,11 @@ function saveAttachment(attachment, message, domainFolder, options = {}) {
  * @returns {DriveFile|null} The saved file or null
  */
 function saveAttachmentLegacy(attachment, folder, messageDate, options = {}) {
-  // Create a mock message object with a getDate method
   const mockMessage = {
     getDate: function () {
       return messageDate || new Date();
     },
   };
-
-  // Call the new version with the right parameters
   const result = saveAttachment(attachment, mockMessage, folder, options);
-
-  // Return the file or null for compatibility
   return result.success ? result.file : null;
 }

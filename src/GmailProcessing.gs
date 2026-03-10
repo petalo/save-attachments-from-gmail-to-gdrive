@@ -385,9 +385,9 @@ function processThreadsWithCounting(
                   );
 
                   // The same sourceAttachmentId is used across all domain targets for this attachment.
-                  // Deduplication safety is maintained because buildAttachmentSourceIndexKey hashes
-                  // sourceAttachmentId|folderId — the folderId differs per domain folder, so each
-                  // domain copy gets a unique dedup key.
+                  // Deduplication safety is maintained because saveAttachment checks by filename+size
+                  // and then by source_attachment_id in the file description — the folderId scope
+                  // differs per domain folder, so each domain copy is checked independently.
                   const saveResult = saveAttachment(attachment, message, domainFolder, {
                     sourceAttachmentId: `${sourceAttachmentId}:domain`,
                   });

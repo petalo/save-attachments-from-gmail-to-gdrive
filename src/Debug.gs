@@ -510,3 +510,76 @@ function inspectThreadFailureState(threadId) {
   );
   return state;
 }
+
+/**
+ * Diagnostic: shows current Script Properties usage broken down by key prefix.
+ * Run from the Apps Script editor to assess proximity to the 500-property limit.
+ *
+ * @returns {Object} Usage summary { total, limit, byPrefix }
+ */
+function debugScriptPropertiesUsage() {
+  const props = PropertiesService.getScriptProperties().getProperties();
+  const keys = Object.keys(props);
+  const byPrefix = {};
+  keys.forEach(function (k) {
+    const parts = k.split("_");
+    const prefix = parts.length >= 2 ? parts[0] + "_" + parts[1] : parts[0];
+    byPrefix[prefix] = (byPrefix[prefix] || 0) + 1;
+  });
+  const result = { total: keys.length, limit: 500, byPrefix: byPrefix };
+  Logger.log("Script Properties usage:\n" + JSON.stringify(result, null, 2));
+  if (keys.length >= 490) {
+    Logger.log(
+      "WARNING: Near the 500-property limit! Run cleanupAttachmentSourceIndex() immediately."
+    );
+  }
+  return result;
+}
+
+/**
+ * One-time migration: removes all legacy ATTACHMENT_SOURCE_* entries from
+ * Script Properties. These were used as a dedup index but have been replaced
+ * by Drive description-based dedup (findFileBySourceId).
+ *
+ * Safe to run at any time — only removes the ATTACHMENT_SOURCE_* keys.
+ * Run from the Apps Script editor after deploying the new AttachmentProcessing.gs.
+ *
+ * @returns {number} Number of entries removed
+ */
+function cleanupAttachmentSourceIndex() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const allProps = scriptProperties.getProperties();
+  const keysToDelete = Object.keys(allProps).filter(function (k) {
+    return k.startsWith("ATTACHMENT_SOURCE_");
+  });
+  keysToDelete.forEach(function (k) {
+    scriptProperties.deleteProperty(k);
+  });
+  Logger.log(
+    `cleanupAttachmentSourceIndex: removed ${keysToDelete.length} entries.`
+  );
+  return keysToDelete.length;
+}
+
+/**
+ * Safe wrapper for Script Properties writes that warns when approaching the
+ * 500-property hard limit (triggers at >= 490 entries).
+ *
+ * Use this instead of PropertiesService.getScriptProperties().setProperty()
+ * for any writes that could accumulate over time.
+ *
+ * @param {string} key - Property key
+ * @param {string} value - Property value
+ */
+function safeSetProperty(key, value) {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const count = Object.keys(scriptProperties.getProperties()).length;
+  if (count >= 490) {
+    logWithUser(
+      `Script Properties near limit (${count}/500). Key: "${key}". ` +
+        "Run debugScriptPropertiesUsage() and cleanupAttachmentSourceIndex().",
+      "WARNING"
+    );
+  }
+  scriptProperties.setProperty(key, value);
+}
