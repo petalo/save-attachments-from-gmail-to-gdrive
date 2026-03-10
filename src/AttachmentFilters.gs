@@ -27,7 +27,7 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
     if (CONFIG.attachmentTypesWhitelist.includes(mimeType)) {
       logWithUser(
         `Keeping file with important MIME type ${mimeType}: ${fileName}`,
-        "INFO"
+        "DEBUG"
       );
       return false; // Don't skip these types
     }
@@ -47,7 +47,7 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
       ) {
         logWithUser(
           `Skipping inline image with Content-Disposition "${contentDisposition}": ${fileName}`,
-          "INFO"
+          "DEBUG"
         );
         return true;
       }
@@ -71,7 +71,7 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
         fileName.includes("&disp=") ||
         fileName.includes("&view=")))
   ) {
-    logWithUser(`Skipping embedded email image URL: ${fileName}`, "INFO");
+    logWithUser(`Skipping embedded email image URL: ${fileName}`, "DEBUG");
     return true;
   }
 
@@ -107,7 +107,7 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
       fileName.toLowerCase() === name.toLowerCase() ||
       fileName.toLowerCase().includes(name.toLowerCase() + "_")
     ) {
-      logWithUser(`Skipping common embedded element: ${fileName}`, "INFO");
+      logWithUser(`Skipping common embedded element: ${fileName}`, "DEBUG");
       return true;
     }
   }
@@ -126,7 +126,7 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
   // Check if the filename matches any of the embedded image patterns
   for (const pattern of embeddedImagePatterns) {
     if (pattern.test(fileName)) {
-      logWithUser(`Skipping embedded image: ${fileName}`, "INFO");
+      logWithUser(`Skipping embedded image: ${fileName}`, "DEBUG");
       return true;
     }
   }
@@ -154,7 +154,7 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
 
   // Always keep documents regardless of size
   if (keepExtensions.includes(fileExtension)) {
-    logWithUser(`Keeping document file: ${fileName}`, "INFO");
+    logWithUser(`Keeping document file: ${fileName}`, "DEBUG");
     return false; // Don't skip these types
   }
 
@@ -165,14 +165,14 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
       `Skipping potential embedded content without extension: ${fileName} (${Math.round(
         fileSize / 1024
       )}KB)`,
-      "INFO"
+      "DEBUG"
     );
     return true;
   }
 
   // Check if we should skip files by extension (like calendar invitations)
   if (CONFIG.skipFileTypes && CONFIG.skipFileTypes.includes(fileExtension)) {
-    logWithUser(`Skipping file type: ${fileName} (${fileExtension})`, "INFO");
+    logWithUser(`Skipping file type: ${fileName} (${fileExtension})`, "DEBUG");
     return true;
   }
 
@@ -187,7 +187,7 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
         `Skipping small image file: ${fileName} (${Math.round(
           fileSize / 1024
         )}KB)`,
-        "INFO"
+        "DEBUG"
       );
       return true;
     }

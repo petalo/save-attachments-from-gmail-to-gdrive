@@ -18,35 +18,30 @@ function validateConfig() {
     );
   }
 
-  // Validate AI configuration if enabled
-  if (CONFIG.invoiceDetection === "gemini") {
-    if (
-      CONFIG.geminiApiKey === "__GEMINI_API_KEY__" &&
-      !PropertiesService.getScriptProperties().getProperty(
-        CONFIG.geminiApiKeyPropertyName
-      )
-    ) {
-      throw new Error(
-        "Configuration error: Gemini API key is not set but Gemini invoice detection is enabled."
-      );
-    }
-  } else if (CONFIG.invoiceDetection === "openai") {
-    if (
-      CONFIG.openAIApiKey === "__OPENAI_API_KEY__" &&
-      !PropertiesService.getScriptProperties().getProperty(
-        CONFIG.openAIApiKeyPropertyName
-      )
-    ) {
-      throw new Error(
-        "Configuration error: OpenAI API key is not set but OpenAI invoice detection is enabled."
-      );
-    }
+  if (
+    !CONFIG.processedLabelName ||
+    !CONFIG.processingLabelName ||
+    !CONFIG.errorLabelName ||
+    !CONFIG.permanentErrorLabelName ||
+    !CONFIG.tooLargeLabelName
+  ) {
+    throw new Error(
+      "Configuration error: processedLabelName, processingLabelName, errorLabelName, permanentErrorLabelName, and tooLargeLabelName must all be set."
+    );
   }
 
-  // Validate numerical values are within acceptable ranges
-  if (CONFIG.aiConfidenceThreshold < 0 || CONFIG.aiConfidenceThreshold > 1) {
+  const labelNames = [
+    CONFIG.processedLabelName,
+    CONFIG.processingLabelName,
+    CONFIG.errorLabelName,
+    CONFIG.permanentErrorLabelName,
+    CONFIG.tooLargeLabelName,
+  ];
+  if (
+    new Set(labelNames).size !== labelNames.length
+  ) {
     throw new Error(
-      "Configuration error: aiConfidenceThreshold must be between 0 and 1."
+      "Configuration error: processedLabelName, processingLabelName, errorLabelName, permanentErrorLabelName, and tooLargeLabelName must be different."
     );
   }
 
@@ -60,10 +55,46 @@ function validateConfig() {
     );
   }
 
-  // Validate interdependent settings
-  if (CONFIG.onlyAnalyzePDFs && !CONFIG.invoiceFileTypes.includes(".pdf")) {
+  if (CONFIG.executionSoftLimitMs < 1000) {
     throw new Error(
-      "Configuration error: onlyAnalyzePDFs is enabled but .pdf is not in invoiceFileTypes."
+      "Configuration error: executionSoftLimitMs must be at least 1000 milliseconds."
+    );
+  }
+
+  if (CONFIG.processingStateTtlMinutes < 1) {
+    throw new Error(
+      "Configuration error: processingStateTtlMinutes must be at least 1 minute."
+    );
+  }
+
+  if (CONFIG.staleRecoveryBatchSize < 1) {
+    throw new Error(
+      "Configuration error: staleRecoveryBatchSize must be at least 1."
+    );
+  }
+
+  if (CONFIG.maxThreadFailureRetries < 1) {
+    throw new Error(
+      "Configuration error: maxThreadFailureRetries must be at least 1."
+    );
+  }
+
+  if (CONFIG.threadFailureStateTtlDays < 1) {
+    throw new Error(
+      "Configuration error: threadFailureStateTtlDays must be at least 1."
+    );
+  }
+
+  const allowedLogLevels = ["DEBUG", "INFO", "WARNING", "ERROR"];
+  if (!allowedLogLevels.includes(String(CONFIG.logLevel || "").toUpperCase())) {
+    throw new Error(
+      "Configuration error: logLevel must be one of DEBUG, INFO, WARNING, ERROR."
+    );
+  }
+
+  if (CONFIG.executionModel !== "effective_user_only") {
+    throw new Error(
+      "Configuration error: executionModel must be \"effective_user_only\"."
     );
   }
 
@@ -71,24 +102,28 @@ function validateConfig() {
 }
 
 /**
- * Main function that processes Gmail attachments for authorized users
+ * Main function that processes Gmail attachments for the effective user
  *
  * This function:
  * 1. Validates the configuration
  * 2. Acquires an execution lock to prevent concurrent runs
- * 3. Gets the list of authorized users
- * 4. Processes emails for each user
+ * 3. Computes a safe execution deadline
+ * 4. Processes emails for the current execution user
  * 5. Logs completion
  *
- * @return {boolean} True if processing completed successfully, false if an error occurred or if no users are authorized.
+ * @return {boolean} True if processing completed successfully, false if an error occurred.
  * The function follows a structured flow:
  * - It first validates the configuration to ensure all required settings are properly set.
  * - It attempts to acquire a lock to ensure no concurrent executions.
- * - It retrieves the list of authorized users.
- * - For each user, it processes their emails to save attachments to Google Drive.
+ * - It computes a soft execution deadline to avoid hard timeouts.
+ * - It processes the current user's emails to save attachments to Google Drive.
  * - Logs are generated throughout the process to provide detailed information on the execution status.
  */
 function saveAttachmentsToDrive() {
+  let currentUser = null;
+  let lockAcquired = false;
+  const executionStartMs = new Date().getTime();
+
   try {
     logWithUser("Starting attachment processing", "INFO");
 
@@ -97,25 +132,23 @@ function saveAttachmentsToDrive() {
     logWithUser("Configuration validated successfully", "INFO");
 
     // Acquire lock to prevent concurrent executions
-    const currentUser = Session.getEffectiveUser().getEmail();
+    currentUser = Session.getEffectiveUser().getEmail();
     if (!acquireExecutionLock(currentUser)) {
       logWithUser("Another instance is already running. Exiting.", "WARNING");
       return false;
     }
+    lockAcquired = true;
 
-    // Get authorized users
-    const users = getAuthorizedUsers();
-
-    if (!users || users.length === 0) {
-      logWithUser("No authorized users found. Exiting.", "WARNING");
+    // Process only the effective user for this execution.
+    // GmailApp runs in the current execution context, so iterating over a
+    // registered user list would reprocess the same mailbox.
+    const deadlineMs = executionStartMs + CONFIG.executionSoftLimitMs;
+    recoverStaleProcessingThreads(currentUser, deadlineMs);
+    logWithUser(`Processing attachments for current user: ${currentUser}`, "INFO");
+    const processed = processUserEmails(currentUser, true, deadlineMs);
+    if (!processed) {
+      logWithUser(`Processing failed for user: ${currentUser}`, "ERROR");
       return false;
-    }
-
-    logWithUser(`Processing attachments for ${users.length} users`, "INFO");
-
-    // Process each user
-    for (const user of users) {
-      processUserEmails(user);
     }
 
     logWithUser("Attachment processing completed successfully", "INFO");
@@ -123,6 +156,17 @@ function saveAttachmentsToDrive() {
   } catch (error) {
     logWithUser(`Error in saveAttachmentsToDrive: ${error.message}`, "ERROR");
     return false;
+  } finally {
+    if (lockAcquired) {
+      try {
+        releaseExecutionLock(currentUser);
+      } catch (releaseError) {
+        logWithUser(
+          `Error releasing execution lock: ${releaseError.message}`,
+          "WARNING"
+        );
+      }
+    }
   }
 }
 

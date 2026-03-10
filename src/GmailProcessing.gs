@@ -1,267 +1,54 @@
 /**
  * Gmail processing functions for Gmail Attachment Organizer
+ *
+ * Label helpers → LabelManagement.gs
+ * Thread state  → ThreadState.gs
  */
 
 /**
- * Determines if a message appears to contain an invoice using AI or keywords
+ * Builds a deterministic source ID for an attachment processing attempt.
  *
- * @param {GmailMessage} message - The Gmail message to analyze
- * @returns {boolean} True if the message likely contains an invoice
+ * @param {string} threadId - Gmail thread ID
+ * @param {string} messageId - Gmail message ID
+ * @param {number} attachmentIndex - Attachment index within filtered message list
+ * @param {GmailAttachment} attachment - Attachment object
+ * @returns {string} Deterministic source ID
  */
-function isInvoiceMessage(message) {
-  // Early return if invoice detection is disabled
-  if (CONFIG.invoiceDetection === false) return false;
-
-  try {
-    // Check if any detection method is enabled
-    if (
-      CONFIG.invoiceDetection === "gemini" ||
-      CONFIG.invoiceDetection === "openai" ||
-      CONFIG.invoiceDetection === "email"
-    ) {
-      // Check if message has attachments and if any are PDFs (with stricter checking)
-      if (CONFIG.onlyAnalyzePDFs) {
-        const attachments = message.getAttachments();
-        let hasPDF = false;
-
-        for (const attachment of attachments) {
-          const fileName = attachment.getName().toLowerCase();
-          const contentType = attachment.getContentType().toLowerCase();
-
-          // Strict PDF check - both extension and MIME type
-          if (CONFIG.strictPdfCheck) {
-            if (fileName.endsWith(".pdf") && contentType.includes("pdf")) {
-              hasPDF = true;
-              break;
-            }
-          } else {
-            // Legacy check - just extension
-            if (fileName.endsWith(".pdf")) {
-              hasPDF = true;
-              break;
-            }
-          }
-        }
-
-        // Skip AI if there are no PDF attachments
-        if (!hasPDF) {
-          logWithUser("No PDF attachments found, skipping AI analysis", "INFO");
-          // Don't fall back to keywords when there are no PDFs if onlyAnalyzePDFs is true
-          // This prevents non-PDF attachments from being classified as invoices based on keywords
-          return false;
-        }
-      }
-
-      // Check if sender domain should be skipped
-      const sender = message.getFrom();
-      const domain = extractDomain(sender);
-      if (CONFIG.skipAIForDomains && CONFIG.skipAIForDomains.includes(domain)) {
-        logWithUser(`Skipping AI for domain ${domain}, using keywords`, "INFO");
-        return checkKeywords(message);
-      }
-
-      // NEW: Check for email-based detection
-      if (CONFIG.invoiceDetection === "email") {
-        const isInvoice = InvoiceDetection.isInvoiceSender(sender);
-        logWithUser(
-          `Email-based invoice detection result: ${isInvoice}`,
-          "INFO"
-        );
-        return isInvoice;
-      }
-
-      // Try Gemini detection first if enabled
-      if (CONFIG.invoiceDetection === "gemini") {
-        try {
-          const isInvoice = GeminiDetection.isInvoiceWithGemini(message);
-          logWithUser(`Gemini invoice detection result: ${isInvoice}`, "INFO");
-          return isInvoice;
-        } catch (geminiError) {
-          logWithUser(
-            `Gemini detection error: ${geminiError.message}, trying fallback options`,
-            "WARNING"
-          );
-
-          // Try OpenAI if enabled as fallback
-          if (CONFIG.invoiceDetection === "openai") {
-            try {
-              const isInvoice = OpenAIDetection.isInvoiceWithOpenAI(message);
-              logWithUser(
-                `OpenAI invoice detection result: ${isInvoice}`,
-                "INFO"
-              );
-              return isInvoice;
-            } catch (openaiError) {
-              logWithUser(
-                `OpenAI detection error: ${openaiError.message}, falling back to keywords`,
-                "WARNING"
-              );
-              return CONFIG.fallbackToKeywords ? checkKeywords(message) : false;
-            }
-          } else if (CONFIG.fallbackToKeywords) {
-            return checkKeywords(message);
-          } else {
-            return false;
-          }
-        }
-      }
-      // Try OpenAI if Gemini is disabled but OpenAI is enabled
-      else if (CONFIG.invoiceDetection === "openai") {
-        try {
-          const isInvoice = OpenAIDetection.isInvoiceWithOpenAI(message);
-          logWithUser(`OpenAI invoice detection result: ${isInvoice}`, "INFO");
-          return isInvoice;
-        } catch (openaiError) {
-          logWithUser(
-            `OpenAI detection error: ${openaiError.message}, falling back to keywords`,
-            "WARNING"
-          );
-          return CONFIG.fallbackToKeywords ? checkKeywords(message) : false;
-        }
-      }
-    }
-
-    // Use keyword detection if no AI is enabled
-    return checkKeywords(message);
-  } catch (error) {
-    logWithUser(`Error in invoice detection: ${error.message}`, "ERROR");
-    return false;
-  }
-}
-
-/**
- * Helper function to check for invoice keywords in message subject and body
- *
- * @param {GmailMessage} message - The Gmail message to check
- * @returns {boolean} True if invoice keywords are found
- */
-function checkKeywords(message) {
-  try {
-    // Check subject for invoice keywords
-    const subject = message.getSubject().toLowerCase();
-    for (const keyword of CONFIG.invoiceKeywords) {
-      if (subject.includes(keyword.toLowerCase())) {
-        logWithUser(
-          `Invoice keyword "${keyword}" found in subject: "${subject}"`,
-          "INFO"
-        );
-        return true;
-      }
-    }
-
-    // Check body for invoice keywords (optional, may affect performance)
-    try {
-      const body = message.getPlainBody().toLowerCase();
-      for (const keyword of CONFIG.invoiceKeywords) {
-        if (body.includes(keyword.toLowerCase())) {
-          logWithUser(
-            `Invoice keyword "${keyword}" found in message body`,
-            "INFO"
-          );
-          return true;
-        }
-      }
-    } catch (e) {
-      // If we can't get the body, just log and continue
-      logWithUser(`Could not check message body: ${e.message}`, "WARNING");
-    }
-
-    return false;
-  } catch (error) {
-    logWithUser(
-      `Error checking for invoice keywords: ${error.message}`,
-      "ERROR"
-    );
-    return false;
-  }
-}
-
-/**
- * Determines if an attachment appears to be an invoice based on file extension and content type
- *
- * @param {GmailAttachment} attachment - The attachment to analyze
- * @returns {boolean} True if the attachment likely is an invoice
- */
-function isInvoiceAttachment(attachment) {
-  if (CONFIG.invoiceDetection === false) return false;
-
-  try {
-    const fileName = attachment.getName().toLowerCase();
-    const contentType = attachment.getContentType().toLowerCase();
-
-    // Check file extension against invoice file types with stricter checking
-    for (const ext of CONFIG.invoiceFileTypes) {
-      const lowerExt = ext.toLowerCase();
-
-      // Strict PDF check - both extension and MIME type
-      if (CONFIG.strictPdfCheck) {
-        if (
-          lowerExt === ".pdf" &&
-          fileName.endsWith(lowerExt) &&
-          contentType.includes("pdf")
-        ) {
-          return true;
-        }
-      } else {
-        // Legacy check - just extension
-        if (fileName.endsWith(lowerExt)) {
-          return true;
-        }
-      }
-    }
-
-    return false;
-  } catch (error) {
-    logWithUser(
-      `Error checking if attachment is invoice: ${error.message}`,
-      "ERROR"
-    );
-    return false;
-  }
-}
-
-/**
- * Gets or creates the processed label
- *
- * @returns {GmailLabel} The Gmail label used to mark processed threads
- */
-function getProcessedLabel() {
-  let processedLabel = GmailApp.getUserLabelByName(CONFIG.processedLabelName);
-
-  if (!processedLabel) {
-    processedLabel = GmailApp.createLabel(CONFIG.processedLabelName);
-    logWithUser(`Created new Gmail label: ${CONFIG.processedLabelName}`);
-  } else {
-    logWithUser(`Using existing Gmail label: ${CONFIG.processedLabelName}`);
-  }
-
-  return processedLabel;
+function buildSourceAttachmentId(
+  threadId,
+  messageId,
+  attachmentIndex,
+  attachment
+) {
+  const name = attachment.getName();
+  const size = attachment.getSize();
+  return `${threadId}:${messageId}:${attachmentIndex}:${name}:${size}`;
 }
 
 /**
  * Processes emails for a specific user with optimized batch handling
  *
- * This function processes emails in batches until it finds enough threads
- * with valid attachments or exhausts all unprocessed threads.
+ * This function processes a single paginated page of unprocessed threads
+ * per execution to keep runtime predictable and reduce resource usage.
  *
  * @param {string} userEmail - Email of the user to process
  * @param {boolean} oldestFirst - Whether to process oldest emails first (default: true)
+ * @param {number|null} deadlineMs - Unix timestamp (ms) to stop safely before hard timeout
  * @returns {boolean} True if processing was successful, false if an error occurred
  *
  * The function follows this flow:
  * 1. Accesses the main Google Drive folder specified in CONFIG
  * 2. Gets or creates the Gmail label used to mark processed threads
  * 3. Builds search criteria to find unprocessed threads with attachments
- * 4. Tests different search variations to find the most effective query
- * 5. Retrieves and optionally sorts threads by date (oldest first if specified)
- * 6. Processes threads in batches, with batch size determined by CONFIG.batchSize
- * 7. Tracks progress and adjusts batch size dynamically to meet target counts
- * 8. Returns success/failure status and logs detailed processing statistics
+ * 4. Retrieves one paginated page of matching threads using CONFIG.batchSize
+ * 5. Optionally sorts threads in that page by date (oldest first)
+ * 6. Processes that single page and applies processed labels as needed
+ * 7. Returns success/failure status and logs processing statistics
  *
- * This batch processing approach helps avoid hitting the 6-minute execution limit
- * of Google Apps Script by processing a controlled number of threads per execution.
+ * This paginated approach helps avoid hitting the 6-minute execution limit
+ * by processing a controlled number of threads per execution.
  */
-function processUserEmails(userEmail, oldestFirst = true) {
+function processUserEmails(userEmail, oldestFirst = true, deadlineMs = null) {
   try {
     logWithUser(`Processing emails for user: ${userEmail}`, "INFO");
 
@@ -276,49 +63,28 @@ function processUserEmails(userEmail, oldestFirst = true) {
       );
     }
 
-    // Get or create the 'Processed' label
+    // Get or create processing state labels
     let processedLabel = getProcessedLabel();
+    let processingLabel = getProcessingLabel();
+    let errorLabel = getErrorLabel();
+    let permanentErrorLabel = getPermanentErrorLabel();
+    let tooLargeLabel = getTooLargeLabel();
 
     // Build search criteria using the processedLabelName from config
-    let searchCriteria = `has:attachment -label:${CONFIG.processedLabelName}`;
+    const searchCriteria =
+      `has:attachment -label:${CONFIG.processedLabelName}` +
+      ` -label:${CONFIG.permanentErrorLabelName}` +
+      ` -label:${CONFIG.tooLargeLabelName}`;
+    const pageSize = Math.max(1, CONFIG.batchSize);
 
-    // Debug: Try several search variations to see if any of them work better
-    const searchVariations = [
-      { name: "Standard", query: searchCriteria },
-      { name: "In Inbox", query: `in:inbox ${searchCriteria}` },
-      {
-        name: "With quote",
-        query: `has:attachment -label:"${CONFIG.processedLabelName}"`,
-      },
-      {
-        name: "With parentheses",
-        query: `has:attachment AND -(label:${CONFIG.processedLabelName})`,
-      },
-      {
-        name: "Explicit attachment",
-        query: `filename:* -label:${CONFIG.processedLabelName}`,
-      },
-    ];
-
-    // Try each search variation and log results
-    logWithUser("Testing different search variations:", "INFO");
-    for (const variation of searchVariations) {
-      const count = GmailApp.search(variation.query).length;
-      logWithUser(
-        `- ${variation.name}: "${variation.query}" found ${count} threads`,
-        "INFO"
-      );
-    }
-
-    // Debug: Check how many threads match the base search criteria
-    const totalMatchingThreads = GmailApp.search(searchCriteria).length;
+    // Single pagination cycle per execution to keep runtime predictable
+    const threads = GmailApp.search(searchCriteria, 0, pageSize);
     logWithUser(
-      `Total unprocessed threads with attachments found: ${totalMatchingThreads}`,
+      `Retrieved ${threads.length} threads from paginated search (offset=0, limit=${pageSize})`,
       "INFO"
     );
 
-    // Continue only if we actually have matching threads
-    if (totalMatchingThreads === 0) {
+    if (threads.length === 0) {
       logWithUser(
         "No unprocessed threads with attachments found, skipping processing",
         "INFO"
@@ -326,114 +92,56 @@ function processUserEmails(userEmail, oldestFirst = true) {
       return true;
     }
 
-    // NOTE: We no longer add 'older_first' to the search criteria since it doesn't work as expected
-    // Instead, we'll sort the threads ourselves after retrieving them
-    if (oldestFirst) {
-      logWithUser(
-        "Will manually sort threads by date (oldest first) after retrieving them",
-        "INFO"
-      );
-    } else {
-      logWithUser("Using default order (newest first)", "INFO");
-    }
-
-    // Initialize batch processing
-    let threadsProcessed = 0;
-    let threadsWithValidAttachments = 0;
-    let batchSize = CONFIG.batchSize;
-    let offset = 0;
-
-    // Get all threads that match our search criteria
-    let allThreads = GmailApp.search(searchCriteria);
-    logWithUser(
-      `Retrieved ${allThreads.length} total threads matching search criteria`,
-      "INFO"
-    );
-
-    // If we want oldest first, manually sort the threads by date
-    if (oldestFirst && allThreads.length > 0) {
+    // Preserve oldest-first preference within the current page.
+    if (oldestFirst && threads.length > 1) {
       try {
-        // Sort threads by date (oldest first)
-        allThreads.sort(function (a, b) {
+        threads.sort(function (a, b) {
           const dateA = a.getLastMessageDate();
           const dateB = b.getLastMessageDate();
-          return dateA - dateB; // Ascending order (oldest first)
+          return dateA - dateB;
         });
-        logWithUser(
-          "Successfully sorted threads by date (oldest first)",
-          "INFO"
-        );
+        logWithUser("Sorted paginated threads by date (oldest first)", "INFO");
       } catch (e) {
         logWithUser(
-          `Error sorting threads: ${e.message}. Will use default order.`,
+          `Error sorting paginated threads: ${e.message}. Using default order.`,
           "WARNING"
         );
       }
     }
 
-    // Continue processing batches until we reach the desired number of threads with valid attachments
-    // or until we run out of unprocessed threads
-    while (
-      threadsWithValidAttachments < CONFIG.batchSize &&
-      offset < allThreads.length
-    ) {
-      // Get the next batch of threads from our already retrieved and sorted list
-      const currentBatchSize = Math.min(batchSize, allThreads.length - offset);
-      const threads = allThreads.slice(offset, offset + currentBatchSize);
-
-      // If no more threads, break out of the loop
-      if (threads.length === 0) {
-        logWithUser(
-          "No more unprocessed threads with attachments found in this batch",
-          "INFO"
-        );
-        break;
-      }
-
-      logWithUser(
-        `Processing batch of ${threads.length} threads (batch ${
-          Math.floor(offset / batchSize) + 1
-        })`,
-        "INFO"
-      );
-
-      // Debug: Log subject of first thread for troubleshooting
-      if (threads.length > 0) {
-        logWithUser(
-          `First thread subject: "${threads[0].getFirstMessageSubject()}" from ${threads[0]
-            .getLastMessageDate()
-            .toISOString()}`,
-          "INFO"
-        );
-      }
-
-      // Process each thread and count those with valid attachments
-      const result = processThreadsWithCounting(
-        threads,
-        mainFolder,
-        processedLabel
-      );
-      threadsProcessed += threads.length;
-      threadsWithValidAttachments += result.threadsWithAttachments;
-
-      logWithUser(
-        `Batch processed ${threads.length} threads, ${result.threadsWithAttachments} had valid attachments`,
-        "INFO"
-      );
-
-      // Update the offset for the next batch
-      offset += threads.length;
-
-      // If we're getting close to our target, reduce the next batch size to avoid processing too many
-      if (threadsWithValidAttachments + batchSize > CONFIG.batchSize * 1.5) {
-        batchSize = Math.max(5, CONFIG.batchSize - threadsWithValidAttachments);
-      }
-    }
-
+    // Debug: Log subject of first thread for troubleshooting
     logWithUser(
-      `Completed processing ${threadsProcessed} threads, ${threadsWithValidAttachments} with valid attachments for user: ${userEmail}`,
+      `First paginated thread subject: "${threads[0].getFirstMessageSubject()}" from ${threads[0]
+        .getLastMessageDate()
+        .toISOString()}`,
       "INFO"
     );
+
+    // Process exactly one page per execution
+    const result = processThreadsWithCounting(
+      threads,
+      mainFolder,
+      processedLabel,
+      processingLabel,
+      errorLabel,
+      permanentErrorLabel,
+      tooLargeLabel,
+      deadlineMs,
+      userEmail
+    );
+    const threadsProcessed = result.processedThreads;
+    const threadsWithValidAttachments = result.threadsWithAttachments;
+
+    logWithUser(
+      `Completed paginated processing: ${threadsProcessed} threads, ${threadsWithValidAttachments} with valid attachments for user: ${userEmail}`,
+      "INFO"
+    );
+    if (result.stoppedByDeadline) {
+      logWithUser(
+        `Stopped early due to execution soft limit; remaining threads will continue in next run`,
+        "WARNING"
+      );
+    }
     return true;
   } catch (error) {
     logWithUser(
@@ -454,7 +162,12 @@ function processUserEmails(userEmail, oldestFirst = true) {
  * @param {GmailThread[]} threads - Gmail threads to process
  * @param {DriveFolder} mainFolder - The main folder to save attachments to
  * @param {GmailLabel} processedLabel - The label to apply to processed threads
- * @returns {Object} Object containing count of threads with valid attachments
+ * @param {GmailLabel} processingLabel - The label to apply while processing
+ * @param {GmailLabel} errorLabel - The label to apply on processing failure
+ * @param {GmailLabel} permanentErrorLabel - The label for non-retriable failures
+ * @param {GmailLabel} tooLargeLabel - The label for too-large attachments
+ * @param {number|null} deadlineMs - Unix timestamp (ms) to stop safely before hard timeout
+ * @returns {Object} Object containing count of threads with valid attachments and processing status
  *
  * The function follows this flow:
  * 1. Iterates through each thread in the provided array
@@ -464,17 +177,42 @@ function processUserEmails(userEmail, oldestFirst = true) {
  *    - Filters attachments based on sender domain and attachment properties
  *    - Creates domain folders as needed and saves valid attachments
  *    - Verifies file timestamps match email dates
- * 4. Marks threads as processed if they had attachments (even if all were filtered out)
- * 5. Counts and returns the number of threads that had valid attachments saved
+ * 4. Marks threads as processed only when safe (or when all attachments were filtered out)
+ * 5. Counts and returns processing statistics for the page
  *
  * This function is optimized for batch processing to handle the 6-minute execution limit
  * of Google Apps Script by focusing on counting threads with valid attachments.
  */
-function processThreadsWithCounting(threads, mainFolder, processedLabel) {
+function processThreadsWithCounting(
+  threads,
+  mainFolder,
+  processedLabel,
+  processingLabel,
+  errorLabel,
+  permanentErrorLabel,
+  tooLargeLabel,
+  deadlineMs = null,
+  userEmail = null
+) {
   let threadsWithAttachments = 0;
+  let processedThreads = 0;
+  let stoppedByDeadline = false;
+  const resolvedUserEmail =
+    userEmail || Session.getEffectiveUser().getEmail();
 
   for (let i = 0; i < threads.length; i++) {
+    if (deadlineMs && new Date().getTime() >= deadlineMs) {
+      stoppedByDeadline = true;
+      logWithUser(
+        "Execution soft limit reached; stopping thread loop for safe resume",
+        "WARNING"
+      );
+      break;
+    }
+
     const thread = threads[i];
+    let threadId = null;
+    let processingLabelApplied = false;
     try {
       // Check if the thread is already processed
       const threadLabels = thread.getLabels();
@@ -483,16 +221,52 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
       );
 
       if (!isAlreadyProcessed) {
+        threadId = thread.getId();
+        const previousFailure = getThreadFailureState(threadId);
+        if (previousFailure && previousFailure.category === "permanent") {
+          withRetry(
+            () => thread.addLabel(permanentErrorLabel),
+            "adding permanent error label from stored state"
+          );
+          logWithUser(
+            `Skipping thread with permanent failure state: ${threadId} (${previousFailure.code})`,
+            "WARNING"
+          );
+          processedThreads++;
+          continue;
+        }
+
         const messages = thread.getMessages();
         let threadProcessed = false;
         let threadHasAttachments = false;
+        let threadHadValidAttachments = false;
+        let threadHadSaveFailures = false;
+        let threadHasTooLargeAttachments = false;
+        let threadMarkedPermanentFailure = false;
         const threadSubject = thread.getFirstMessageSubject();
         logWithUser(`Processing thread: ${threadSubject}`);
+        withRetry(
+          () => thread.addLabel(processingLabel),
+          "adding processing label"
+        );
+        processingLabelApplied = true;
+        try {
+          markThreadProcessingState(
+            threadId,
+            Session.getEffectiveUser().getEmail()
+          );
+        } catch (processingStateError) {
+          logWithUser(
+            `Failed to store processing checkpoint: ${processingStateError.message}`,
+            "WARNING"
+          );
+        }
 
         // Process each message in the thread
         for (let j = 0; j < messages.length; j++) {
           const message = messages[j];
           const attachments = message.getAttachments();
+          const messageId = message.getId();
           const sender = message.getFrom();
           // Get the message date to use for file creation date
           const messageDate = message.getDate();
@@ -509,7 +283,8 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
             threadHasAttachments = true;
 
             logWithUser(
-              `Found ${attachments.length} attachments in message from ${sender}`
+              `Found ${attachments.length} attachments in message from ${sender}${extractDomain(sender) === extractDomain(resolvedUserEmail) ? " (sent by me)" : ""}`,
+              "DEBUG"
             );
 
             // Log MIME types to help diagnose what types of attachments are found
@@ -519,7 +294,7 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
                   `Attachment: ${att.getName()}, Type: ${att.getContentType()}, Size: ${Math.round(
                     att.getSize() / 1024
                   )}KB`,
-                  "INFO"
+                  "DEBUG"
                 );
               } catch (e) {
                 // Skip if we can't get content type
@@ -533,12 +308,26 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
               const fileName = attachment.getName();
               const fileSize = attachment.getSize();
 
-              // Skip if it matches our filter criteria - passing full attachment object
-              if (
-                shouldSkipFile(fileName, fileSize, attachment) ||
-                fileSize > CONFIG.maxFileSize
-              ) {
-                logWithUser(`Skipping attachment: ${fileName}`, "INFO");
+              if (fileSize > CONFIG.maxFileSize) {
+                threadHasTooLargeAttachments = true;
+                registerThreadFailure(threadId, {
+                  category: "too_large",
+                  code: "too_large",
+                  context: "attachment_filter",
+                  message: `Attachment exceeds max size (${fileSize} bytes > ${CONFIG.maxFileSize})`,
+                  attachmentName: fileName,
+                  attachmentSize: fileSize,
+                });
+                logWithUser(
+                  `Attachment too large, skipping and labeling thread: ${fileName}`,
+                  "WARNING"
+                );
+                continue;
+              }
+
+              // Skip if it matches filter criteria
+              if (shouldSkipFile(fileName, fileSize, attachment)) {
+                logWithUser(`Skipping attachment: ${fileName}`, "DEBUG");
                 continue;
               }
 
@@ -547,124 +336,121 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
 
             // Only create domain folder if we have valid attachments to save
             if (validAttachments.length > 0) {
-              const domainFolder = getDomainFolder(sender, mainFolder);
+              // For sent messages: route to each external recipient domain.
+              // For received messages: route to the sender's domain (existing behavior).
+              const isSentByMe =
+                extractDomain(sender) === extractDomain(resolvedUserEmail);
+              const targetDomains = isSentByMe
+                ? extractExternalRecipientDomains(
+                    message,
+                    extractDomain(resolvedUserEmail)
+                  // getDomainFolder calls extractDomain() internally, which requires an "@" to
+                  // parse a domain. Prefix bare domain strings (e.g. "acme.com" → "@acme.com")
+                  // since extractExternalRecipientDomains returns plain domain strings.
+                  ).map((d) => "@" + d)
+                : [sender];
 
-              // Check if this message might contain invoices
-              const isInvoice = isInvoiceMessage(message);
-              let invoicesFolder = null;
-
-              // If invoice detection is enabled and this might be an invoice,
-              // get the invoices folder with domain subfolder
-              if (CONFIG.invoiceDetection !== false && isInvoice) {
-                logWithUser(`Message appears to contain invoice(s)`, "INFO");
-                const senderDomain = extractDomain(sender);
-                invoicesFolder = getInvoicesFolder(mainFolder, senderDomain);
-              }
-
-              // Process each valid attachment
-              for (let k = 0; k < validAttachments.length; k++) {
-                const attachment = validAttachments[k];
+              if (targetDomains.length === 0) {
                 logWithUser(
-                  `Processing attachment: ${attachment.getName()} (${Math.round(
-                    attachment.getSize() / 1024
-                  )}KB)`
-                );
-                // Log the message date that will be used for the file timestamp
-                logWithUser(
-                  `Email date for timestamp: ${messageDate.toISOString()}`,
+                  `Skipping sent message with no external recipients: ${threadSubject}`,
                   "INFO"
                 );
+                continue;
+              }
 
-                // Use the legacy wrapper for backward compatibility
-                const savedFile = saveAttachmentLegacy(
-                  attachment,
-                  domainFolder,
-                  messageDate
-                );
+              threadHadValidAttachments = true;
 
-                // Process the result object
-                if (savedFile) {
-                  // If the file was saved, verify its timestamp was set correctly
-                  try {
-                    // Get the file's timestamp using DriveApp
-                    const updatedDate = savedFile.getLastUpdated();
-                    logWithUser(
-                      `Saved file modification date: ${updatedDate.toISOString()}`,
-                      "INFO"
-                    );
+              for (const domainTarget of targetDomains) {
+                const domainFolder = getDomainFolder(domainTarget, mainFolder);
 
-                    // Compare with the message date
-                    const messageDateTime = messageDate.getTime();
-                    const fileDateTime = updatedDate.getTime();
-                    const diffInMinutes =
-                      Math.abs(messageDateTime - fileDateTime) / (1000 * 60);
+                // Process each valid attachment
+                for (let k = 0; k < validAttachments.length; k++) {
+                  const attachment = validAttachments[k];
+                  const sourceAttachmentId = buildSourceAttachmentId(
+                    threadId,
+                    messageId,
+                    k,
+                    attachment
+                  );
+                  logWithUser(
+                    `Processing attachment: ${attachment.getName()} (${Math.round(
+                      attachment.getSize() / 1024
+                    )}KB)`,
+                    "DEBUG"
+                  );
+                  // Log the message date that will be used for the file timestamp
+                  logWithUser(
+                    `Email date for timestamp: ${messageDate.toISOString()}`,
+                    "DEBUG"
+                  );
 
-                    if (diffInMinutes < 5) {
+                  // The same sourceAttachmentId is used across all domain targets for this attachment.
+                  // Deduplication safety is maintained because buildAttachmentSourceIndexKey hashes
+                  // sourceAttachmentId|folderId — the folderId differs per domain folder, so each
+                  // domain copy gets a unique dedup key.
+                  const saveResult = saveAttachment(attachment, message, domainFolder, {
+                    sourceAttachmentId: `${sourceAttachmentId}:domain`,
+                  });
+
+                  // Process the result object
+                  if (saveResult.success) {
+                    const savedFile = saveResult.file;
+                    threadProcessed = true;
+                    // If the file was saved, verify its timestamp was set correctly
+                    try {
+                      // Get the file's timestamp using DriveApp
+                      const updatedDate = savedFile.getLastUpdated();
                       logWithUser(
-                        "✅ File timestamp matches email date (within 5 minutes)",
-                        "INFO"
+                        `Saved file modification date: ${updatedDate.toISOString()}`,
+                        "DEBUG"
                       );
-                    } else {
+
+                      // Compare with the message date
+                      const messageDateTime = messageDate.getTime();
+                      const fileDateTime = updatedDate.getTime();
+                      const diffInMinutes =
+                        Math.abs(messageDateTime - fileDateTime) / (1000 * 60);
+
+                      if (diffInMinutes < 5) {
+                        logWithUser(
+                          "✅ File timestamp matches email date (within 5 minutes)",
+                          "INFO"
+                        );
+                      } else {
+                        logWithUser(
+                          `⚠️ File timestamp differs from email date by ${Math.round(
+                            diffInMinutes
+                          )} minutes`,
+                          "WARNING"
+                        );
+                      }
+                    } catch (e) {
+                      // Just log the error but don't stop processing
                       logWithUser(
-                        `⚠️ File timestamp differs from email date by ${Math.round(
-                          diffInMinutes
-                        )} minutes`,
+                        `Error verifying file timestamp: ${e.message}`,
                         "WARNING"
                       );
                     }
-
-                    // If this is an invoice or the attachment looks like an invoice,
-                    // also save it to the invoices folder
-                    if (invoicesFolder || isInvoiceAttachment(attachment)) {
-                      if (!invoicesFolder) {
-                        logWithUser(
-                          `Attachment appears to be an invoice based on file type`,
-                          "INFO"
-                        );
-                        const senderDomain = extractDomain(sender);
-                        invoicesFolder = getInvoicesFolder(
-                          mainFolder,
-                          senderDomain
-                        );
-                      }
-
-                      // Save a copy to the invoices folder
-                      try {
-                        logWithUser(
-                          `Saving copy to invoices folder: ${CONFIG.invoicesFolderName}`,
-                          "INFO"
-                        );
-                        const invoiceFile = saveAttachmentLegacy(
-                          attachment,
-                          invoicesFolder,
-                          messageDate
-                        );
-
-                        if (invoiceFile) {
-                          logWithUser(
-                            `Successfully saved invoice copy: ${attachment.getName()}`,
-                            "INFO"
-                          );
-                        }
-                      } catch (invoiceError) {
-                        logWithUser(
-                          `Error saving to invoices folder: ${invoiceError.message}`,
-                          "ERROR"
-                        );
-                        // Continue processing even if saving to invoices folder fails
-                      }
+                  } else {
+                    threadHadSaveFailures = true;
+                    const failureState = registerThreadFailure(threadId, {
+                      context: "save_attachment",
+                      message:
+                        saveResult.error ||
+                        `Failed to save attachment ${attachment.getName()}`,
+                      attachmentName: attachment.getName(),
+                      attachmentSize: attachment.getSize(),
+                    });
+                    if (failureState && failureState.category === "permanent") {
+                      threadMarkedPermanentFailure = true;
                     }
-                  } catch (e) {
-                    // Just log the error but don't stop processing
                     logWithUser(
-                      `Error verifying file timestamp: ${e.message}`,
+                      `Failed to save valid attachment: ${attachment.getName()}`,
                       "WARNING"
                     );
                   }
-                }
-
-                threadProcessed = true;
-              }
+                } // end for (let k ...)
+              } // end for (const domainTarget of targetDomains)
             } else {
               logWithUser(
                 `No valid attachments to save in message from ${sender}`,
@@ -674,25 +460,89 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
           }
         }
 
-        // Mark as processed:
-        // 1. If we processed valid attachments OR
-        // 2. If the thread had attachments but they were all filtered out
-        if (threadProcessed || threadHasAttachments) {
+        // Mark as processed only for clean outcomes:
+        // 1. Valid attachments saved without save failures or too-large items
+        // 2. Thread had attachments but none were valid, and no too-large items
+        if (threadProcessed && !threadHadSaveFailures && !threadHasTooLargeAttachments) {
           withRetry(
             () => thread.addLabel(processedLabel),
             "adding processed label"
           );
-
-          if (threadProcessed) {
-            logWithUser(
-              `Thread "${threadSubject}" processed with valid attachments and labeled`
-            );
-            threadsWithAttachments++;
-          } else {
-            logWithUser(
-              `Thread "${threadSubject}" had attachments that were filtered out, marked as processed`
+          withRetry(
+            () => thread.removeLabel(errorLabel),
+            "removing error label after successful processing"
+          );
+          withRetry(
+            () => thread.removeLabel(permanentErrorLabel),
+            "removing permanent error label after successful processing"
+          );
+          withRetry(
+            () => thread.removeLabel(tooLargeLabel),
+            "removing too-large label after successful processing"
+          );
+          clearThreadFailureState(threadId);
+          logWithUser(
+            `Thread "${threadSubject}" processed with valid attachments and labeled`
+          );
+          threadsWithAttachments++;
+        } else if (
+          threadHasAttachments &&
+          !threadHadValidAttachments &&
+          !threadHasTooLargeAttachments
+        ) {
+          withRetry(
+            () => thread.addLabel(processedLabel),
+            "adding processed label"
+          );
+          withRetry(
+            () => thread.removeLabel(errorLabel),
+            "removing error label after filtered processing"
+          );
+          withRetry(
+            () => thread.removeLabel(permanentErrorLabel),
+            "removing permanent error label after filtered processing"
+          );
+          withRetry(
+            () => thread.removeLabel(tooLargeLabel),
+            "removing too-large label after filtered processing"
+          );
+          clearThreadFailureState(threadId);
+          logWithUser(
+            `Thread "${threadSubject}" had attachments but none were valid; marked as processed`,
+            "INFO"
+          );
+        } else if (threadHadValidAttachments && threadHadSaveFailures) {
+          withRetry(() => thread.addLabel(errorLabel), "adding error label");
+          if (threadMarkedPermanentFailure) {
+            withRetry(
+              () => thread.addLabel(permanentErrorLabel),
+              "adding permanent error label"
             );
           }
+          if (threadHasTooLargeAttachments) {
+            withRetry(
+              () => thread.addLabel(tooLargeLabel),
+              "adding too-large label alongside save failures"
+            );
+          }
+          logWithUser(
+            `Thread "${threadSubject}" had valid attachments with save failures; not marking as processed for retry`,
+            "WARNING"
+          );
+        } else if (threadHasTooLargeAttachments) {
+          withRetry(() => thread.addLabel(tooLargeLabel), "adding too-large label");
+          withRetry(
+            () => thread.removeLabel(errorLabel),
+            "removing error label for too-large-only thread"
+          );
+          withRetry(
+            () => thread.removeLabel(permanentErrorLabel),
+            "removing permanent error label for too-large-only thread"
+          );
+          logWithUser(
+            `Thread "${threadSubject}" contains attachments above max size; marked as TooLarge`,
+            "WARNING"
+          );
         } else {
           logWithUser(
             `No attachments found in thread "${threadSubject}"`,
@@ -701,17 +551,65 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
         }
       }
     } catch (error) {
+      const failedThreadId = threadId || thread.getId();
+      const failureState = registerThreadFailure(failedThreadId, {
+        context: "thread_exception",
+        message: error.message,
+      });
       logWithUser(
         `Error processing thread "${thread.getFirstMessageSubject()}": ${
           error.message
         }`,
         "ERROR"
       );
+      try {
+        withRetry(
+          () => thread.addLabel(errorLabel),
+          "adding error label after thread exception"
+        );
+        if (failureState && failureState.category === "permanent") {
+          withRetry(
+            () => thread.addLabel(permanentErrorLabel),
+            "adding permanent error label after thread exception"
+          );
+        }
+      } catch (errorLabelError) {
+        logWithUser(
+          `Failed to add error label: ${errorLabelError.message}`,
+          "WARNING"
+        );
+      }
       // Continue with next thread instead of stopping execution
+    } finally {
+      if (processingLabelApplied) {
+        try {
+          withRetry(
+            () => thread.removeLabel(processingLabel),
+            "removing processing label"
+          );
+        } catch (processingCleanupError) {
+          logWithUser(
+            `Failed to remove processing label: ${processingCleanupError.message}`,
+            "WARNING"
+          );
+        }
+      }
+      if (threadId) {
+        try {
+          clearThreadProcessingState(threadId);
+        } catch (processingStateCleanupError) {
+          logWithUser(
+            `Failed to clear processing state: ${processingStateCleanupError.message}`,
+            "WARNING"
+          );
+        }
+      }
     }
+
+    processedThreads++;
   }
 
-  return { threadsWithAttachments };
+  return { threadsWithAttachments, processedThreads, stoppedByDeadline };
 }
 
 /**
@@ -739,6 +637,7 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
 function processMessages(thread, processedLabel, mainFolder) {
   try {
     const messages = thread.getMessages();
+    const threadId = thread.getId();
     let result = {
       totalAttachments: 0,
       savedAttachments: 0,
@@ -750,6 +649,7 @@ function processMessages(thread, processedLabel, mainFolder) {
 
     for (const message of messages) {
       try {
+        const messageId = message.getId();
         const attachments = message.getAttachments();
         const validAttachments = attachments.filter(
           (att) => !shouldSkipFile(att.getName(), att.getSize(), att)
@@ -775,23 +675,22 @@ function processMessages(thread, processedLabel, mainFolder) {
           continue;
         }
 
-        // Check if this message might contain invoices
-        const isInvoice = isInvoiceMessage(message);
-        let invoicesFolder = null;
-
-        // If invoice detection is enabled and this might be an invoice,
-        // get the invoices folder with domain subfolder
-        if (CONFIG.invoiceDetection !== false && isInvoice) {
-          logWithUser(`Message appears to contain invoice(s)`, "INFO");
-          invoicesFolder = getInvoicesFolder(mainFolder, domain);
-        }
-
         result.totalAttachments += validAttachments.length;
 
         // Process each valid attachment
-        for (const attachment of validAttachments) {
+        for (let attachmentIndex = 0; attachmentIndex < validAttachments.length; attachmentIndex++) {
+          const attachment = validAttachments[attachmentIndex];
+          const sourceAttachmentId = buildSourceAttachmentId(
+            threadId,
+            messageId,
+            attachmentIndex,
+            attachment
+          );
+
           // Save to domain folder
-          const saveResult = saveAttachment(attachment, message, domainFolder);
+          const saveResult = saveAttachment(attachment, message, domainFolder, {
+            sourceAttachmentId: `${sourceAttachmentId}:domain`,
+          });
 
           if (saveResult.success) {
             if (saveResult.duplicate) {
@@ -799,44 +698,6 @@ function processMessages(thread, processedLabel, mainFolder) {
             } else {
               result.savedAttachments++;
               result.savedSize += attachment.getSize();
-
-              // If this is an invoice or the attachment looks like an invoice,
-              // also save it to the invoices folder
-              if (invoicesFolder || isInvoiceAttachment(attachment)) {
-                if (!invoicesFolder) {
-                  logWithUser(
-                    `Attachment appears to be an invoice based on file type`,
-                    "INFO"
-                  );
-                  invoicesFolder = getInvoicesFolder(mainFolder, domain);
-                }
-
-                // Save a copy to the invoices folder
-                try {
-                  logWithUser(
-                    `Saving copy to invoices folder: ${CONFIG.invoicesFolderName}`,
-                    "INFO"
-                  );
-                  const invoiceResult = saveAttachment(
-                    attachment,
-                    message,
-                    invoicesFolder
-                  );
-
-                  if (invoiceResult.success && !invoiceResult.duplicate) {
-                    logWithUser(
-                      `Successfully saved invoice copy: ${attachment.getName()}`,
-                      "INFO"
-                    );
-                  }
-                } catch (invoiceError) {
-                  logWithUser(
-                    `Error saving to invoices folder: ${invoiceError.message}`,
-                    "ERROR"
-                  );
-                  // Continue processing even if saving to invoices folder fails
-                }
-              }
             }
           } else {
             result.skippedAttachments++;
@@ -852,8 +713,17 @@ function processMessages(thread, processedLabel, mainFolder) {
       }
     }
 
-    // Apply the processed label to the thread
-    thread.addLabel(processedLabel);
+    // Apply the processed label only when safe:
+    // - no errors during valid-attachment saving, or
+    // - there were no valid attachments to save
+    if (result.errors === 0 || result.totalAttachments === 0) {
+      thread.addLabel(processedLabel);
+    } else {
+      logWithUser(
+        `Thread "${thread.getFirstMessageSubject()}" had save errors; not marked as processed`,
+        "WARNING"
+      );
+    }
 
     // Log a summary for the thread if it had attachments
     if (result.totalAttachments > 0) {

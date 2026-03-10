@@ -3,6 +3,45 @@
  */
 
 /**
+ * Builds a per-user lock key for script properties.
+ *
+ * @param {string} userEmail - User email used to scope the lock
+ * @returns {string} Stable script property key for this user
+ */
+function getExecutionLockKey(userEmail) {
+  const email = (userEmail || Session.getEffectiveUser().getEmail()).toLowerCase();
+  const normalizedEmail = email.replace(/[^a-z0-9]/g, "_");
+  return `EXECUTION_LOCK_${normalizedEmail}`;
+}
+
+/**
+ * Cleans up the legacy global lock key when it is invalid or expired.
+ * Kept temporarily for backward compatibility during migration to per-user locks.
+ */
+function cleanupLegacyExecutionLock() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const legacyKey = "EXECUTION_LOCK";
+  const legacyInfo = scriptProperties.getProperty(legacyKey);
+
+  if (!legacyInfo) return;
+
+  try {
+    const lockData = JSON.parse(legacyInfo);
+    const lockTime = lockData.timestamp;
+    const now = new Date().getTime();
+    const isExpired = now - lockTime >= CONFIG.executionLockTime * 60 * 1000;
+
+    if (isExpired) {
+      scriptProperties.deleteProperty(legacyKey);
+      logWithUser("Removed expired legacy global execution lock", "INFO");
+    }
+  } catch (e) {
+    scriptProperties.deleteProperty(legacyKey);
+    logWithUser("Removed invalid legacy global execution lock", "INFO");
+  }
+}
+
+/**
  * Helper function to create consistent log entries with user information
  *
  * This function creates standardized log entries that include timestamp, log level,
@@ -18,15 +57,37 @@
  * 3. Format the log message with timestamp, level, user email, and the provided message
  * 4. Write the formatted message to the Apps Script log using Logger.log()
  */
+const LOG_LEVEL_PRIORITY = {
+  DEBUG: 10,
+  INFO: 20,
+  WARNING: 30,
+  ERROR: 40,
+};
+
+/**
+ * Checks if a log level should be emitted under current configuration.
+ *
+ * @param {string} level - Candidate log level
+ * @returns {boolean} True when message should be logged
+ */
+function shouldLogLevel(level) {
+  const configured = String(CONFIG.logLevel || "INFO").toUpperCase();
+  const threshold = LOG_LEVEL_PRIORITY[configured] || LOG_LEVEL_PRIORITY.INFO;
+  const candidate = LOG_LEVEL_PRIORITY[String(level || "INFO").toUpperCase()];
+  return (candidate || LOG_LEVEL_PRIORITY.INFO) >= threshold;
+}
+
 function logWithUser(message, level = "INFO") {
   // Handle undefined or null message
   if (message === undefined || message === null) {
     message = "[No message provided]";
   }
+  const normalizedLevel = String(level || "INFO").toUpperCase();
+  if (!shouldLogLevel(normalizedLevel)) return;
 
   const userEmail = Session.getEffectiveUser().getEmail();
   const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] [${level}] [${userEmail}] ${message}`;
+  const logMessage = `[${timestamp}] [${normalizedLevel}] [${userEmail}] ${message}`;
   Logger.log(logMessage);
 }
 
@@ -158,10 +219,13 @@ function acquireExecutionLock(userEmail) {
     );
   }
   const scriptProperties = PropertiesService.getScriptProperties();
-  const lockKey = "EXECUTION_LOCK";
+  const lockKey = getExecutionLockKey(userEmail);
 
-  // Try to acquire LockService lock first
-  const lock = LockService.getScriptLock();
+  // Migration helper: clean old global lock key if it's stale/invalid.
+  cleanupLegacyExecutionLock();
+
+  // Try to acquire a per-user lock first (doesn't block other users).
+  const lock = LockService.getUserLock();
   try {
     if (lock.tryLock(30000)) {
       // Try to lock for 30 seconds
@@ -171,11 +235,11 @@ function acquireExecutionLock(userEmail) {
         timestamp: new Date().getTime(),
       };
       scriptProperties.setProperty(lockKey, JSON.stringify(lockData));
-      logWithUser(`Lock acquired by ${userEmail} using LockService`);
+      logWithUser(`Lock acquired by ${userEmail} using UserLock`);
       return true;
     }
   } catch (e) {
-    logWithUser(`LockService failed: ${e.message}`, "WARNING");
+    logWithUser(`UserLock failed: ${e.message}`, "WARNING");
   }
 
   // Fallback to script properties lock
@@ -242,17 +306,17 @@ function releaseExecutionLock(userEmail) {
     );
   }
   const scriptProperties = PropertiesService.getScriptProperties();
-  const lockKey = "EXECUTION_LOCK";
+  const lockKey = getExecutionLockKey(userEmail);
 
-  // Try to release LockService lock first
-  const lock = LockService.getScriptLock();
+  // Try to release per-user LockService lock first
+  const lock = LockService.getUserLock();
   try {
     if (lock.hasLock()) {
       lock.releaseLock();
-      logWithUser("Released LockService lock");
+      logWithUser("Released UserLock lock");
     }
   } catch (e) {
-    logWithUser(`Error releasing LockService lock: ${e.message}`, "WARNING");
+    logWithUser(`Error releasing UserLock lock: ${e.message}`, "WARNING");
   }
 
   // Release script properties lock
@@ -325,6 +389,43 @@ function extractDomain(email) {
   // Now extract the domain from the clean email
   const domainMatch = cleanEmail.match(/@([\w.-]+)/);
   return domainMatch ? domainMatch[1] : "unknown";
+}
+
+/**
+ * Extracts unique external recipient domains from a Gmail message.
+ *
+ * Parses To: and CC: fields, removes the sender's own domain and any
+ * domain in CONFIG.skipDomains, and returns deduplicated external domains.
+ * Used to route sent-email attachments to recipient domain folders.
+ *
+ * @param {GmailMessage} message - The Gmail message to inspect
+ * @param {string} ownDomain - The current user's domain to exclude
+ * @returns {string[]} Unique external domain strings (may be empty)
+ */
+function extractExternalRecipientDomains(message, ownDomain) {
+  const toField = message.getTo() || "";
+  const ccField = message.getCc() || "";
+  const combined = [toField, ccField].join(",");
+
+  if (!combined.trim()) return [];
+
+  const seen = new Set();
+  // Gmail normalises To:/CC: headers before returning them, so quoted display-name
+  // commas (RFC 5322) are not a concern in practice.
+  combined.split(",").forEach(function(addr) {
+    const domain = extractDomain(addr.trim());
+    if (
+      domain !== "unknown" &&
+      domain !== ownDomain &&
+      // Uses script-level CONFIG.skipDomains (not per-user skipDomains), consistent
+      // with sender-domain filtering elsewhere in GmailProcessing.gs.
+      !CONFIG.skipDomains.includes(domain)
+    ) {
+      seen.add(domain);
+    }
+  });
+
+  return Array.from(seen);
 }
 
 /**

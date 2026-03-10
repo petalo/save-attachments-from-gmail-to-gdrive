@@ -36,6 +36,10 @@ const CONFIG = {
   // Gmail label applied to threads after processing
   // This prevents the same emails from being processed multiple times
   processedLabelName: "GDrive_Processed",
+  processingLabelName: "GDrive_Processing",
+  errorLabelName: "GDrive_Error",
+  permanentErrorLabelName: "GDrive_Error_Permanent",
+  tooLargeLabelName: "GDrive_TooLarge",
 
   // Execution settings
   // RECOMMENDED VALUES:
@@ -44,8 +48,14 @@ const CONFIG = {
   // - executionLockTime: Should be at least 2x the expected execution time
   // INTERDEPENDENCY: batchSize directly affects execution time - higher values may hit the 6-minute limit
   triggerIntervalMinutes: 10, // How often the script runs (in minutes)
-  batchSize: 10, // Number of threads to process per execution (prevents hitting 6-minute limit)
+  batchSize: 20, // Number of threads to process per execution (prevents hitting 6-minute limit)
   executionLockTime: 10, // Maximum time in minutes to wait for lock release
+  executionSoftLimitMs: 270000, // Stop early before hard timeout (4.5 minutes)
+  processingStateTtlMinutes: 180, // Stale Processing state threshold for safe recovery
+  staleRecoveryBatchSize: 10, // Max stale Processing threads to recover per execution
+  maxThreadFailureRetries: 3, // Escalate repeated failures to permanent state
+  threadFailureStateTtlDays: 30, // Auto-expire historical failure state
+  executionModel: "effective_user_only", // Supported model: one execution processes only effective user mailbox
 
   //=============================================================================
   // FILTERING SETTINGS - Control which emails and attachments are processed
@@ -88,112 +98,6 @@ const CONFIG = {
   ],
 
   //=============================================================================
-  // INVOICE DETECTION - Settings for identifying and organizing invoices
-  //=============================================================================
-
-  // Main invoice detection settings
-  // RECOMMENDED VALUES:
-  // - invoiceDetection: "gemini" for best privacy and accuracy, "openai" as alternative, "email" for sender-based detection, false to disable
-  // - invoicesFolderName: Using a prefix like "aaa_" ensures the folder appears at the top
-  // INTERDEPENDENCY: When invoiceDetection is enabled, detected invoices are saved to invoicesFolderName
-  invoiceDetection: false, // AI provider to use: "gemini" (recommended), "openai", "email", or false to disable
-  invoicesFolderName: "aaa_Invoices", // Special folder for invoices (prefix ensures it appears at top)
-
-  // Invoice file types and keywords
-  // INTERDEPENDENCY: invoiceFileTypes is used by onlyAnalyzePDFs in SHARED AI SETTINGS
-  // INTERDEPENDENCY: invoiceKeywords is used by fallbackToKeywords in SHARED AI SETTINGS
-  // RECOMMENDED VALUES:
-  // - Add common invoice-related terms in your language(s)
-  // - Include variations of terms (e.g., "factura", "facturación")
-  invoiceFileTypes: [".pdf"], // File extensions considered as potential invoices
-  invoiceKeywords: ["factura", "invoice", "receipt", "recibo", "pago"], // Keywords for basic detection
-
-  //=============================================================================
-  // GEMINI AI SETTINGS - Configuration for Google's Gemini AI (recommended)
-  //=============================================================================
-
-  // API configuration
-  // INTERDEPENDENCY: Only used when invoiceDetection = "gemini"
-  // The API key can be set in three ways:
-  // 1. Directly in this file (not recommended for security)
-  // 2. Through environment variables during build
-  // 3. Stored in Script Properties using the property name below
-  geminiApiKey: "__GEMINI_API_KEY__", // Will be replaced during build process
-  geminiApiKeyPropertyName: "gemini_api_key", // Property name for storing the key in Script Properties
-
-  // Model settings
-  // RECOMMENDED VALUES:
-  // - geminiModel: "gemini-2.0-flash" for fastest response, "gemini-pro" for older deployments
-  // - geminiMaxTokens: 10 is sufficient since we only need a confidence score
-  // - geminiTemperature: 0.05-0.1 for consistent responses, higher values introduce more variability
-  geminiModel: "gemini-2.0-flash", // Gemini model to use
-  geminiMaxTokens: 10, // Maximum tokens for response (low since we only need a confidence score)
-  geminiTemperature: 0.05, // Very low temperature for consistent, conservative responses
-
-  //=============================================================================
-  // OPENAI SETTINGS - Configuration for OpenAI (alternative to Gemini)
-  //=============================================================================
-
-  // API configuration
-  // INTERDEPENDENCY: Only used when invoiceDetection = "openai"
-  // The API key can be set in three ways:
-  // 1. Directly in this file (not recommended for security)
-  // 2. Through environment variables during build
-  // 3. Stored in Script Properties using the property name below
-  openAIApiKey: "__OPENAI_API_KEY__", // Will be replaced during build process
-  openAIApiKeyPropertyName: "openai_api_key", // Property name for storing the key in Script Properties
-
-  // Model settings
-  // RECOMMENDED VALUES:
-  // - openAIModel: "gpt-3.5-turbo" offers good balance of performance and cost
-  // - openAIMaxTokens: 100 is more than needed but provides flexibility
-  // - openAITemperature: 0.05-0.1 for consistent responses
-  openAIModel: "gpt-3.5-turbo", // OpenAI model to use
-  openAIMaxTokens: 100, // Maximum tokens for response
-  openAITemperature: 0.05, // Very low temperature for consistent, conservative responses
-
-  //=============================================================================
-  // SHARED AI SETTINGS - Settings that apply to both Gemini and OpenAI
-  //=============================================================================
-
-  // Domain exclusions for AI processing
-  // Emails from these domains will skip AI analysis and use keyword detection instead
-  skipAIForDomains: ["newsletter.com", "marketing.com"],
-
-  // PDF-only option - only analyze emails with PDF attachments
-  // This reduces unnecessary API calls and improves privacy
-  // INTERDEPENDENCY: When onlyAnalyzePDFs=true, only emails with PDF attachments are sent to AI
-  // INTERDEPENDENCY: When strictPdfCheck=true, both file extension and MIME type must match for PDFs
-  onlyAnalyzePDFs: true, // Only send emails with PDF attachments to AI
-  strictPdfCheck: true, // Check both file extension and MIME type for PDFs (more secure)
-
-  // Fallback and confidence settings
-  // INTERDEPENDENCY: When fallbackToKeywords=true, keyword detection is used if AI fails
-  // INTERDEPENDENCY: This works with invoiceKeywords setting in the INVOICE DETECTION section
-  fallbackToKeywords: true, // Use keyword detection if AI fails or is unavailable
-
-  // AI confidence threshold
-  // RECOMMENDED VALUES:
-  // - 0.9+ for environments where false positives are costly (current setting)
-  // - 0.7-0.8 for balanced precision/recall
-  // - 0.5-0.6 for maximum detection (more false positives)
-  aiConfidenceThreshold: 0.9, // Threshold (0.0-1.0) - higher values reduce false positives
-
-  //=============================================================================
-  // HISTORICAL PATTERN ANALYSIS - Learn from previously identified invoices
-  //=============================================================================
-
-  // Settings for analyzing patterns in previously identified invoices
-  // INTERDEPENDENCY: useHistoricalPatterns requires manuallyLabeledInvoicesLabel to be set
-  // INTERDEPENDENCY: This feature works with the AI invoice detection to improve accuracy
-  // RECOMMENDED VALUES:
-  // - maxHistoricalEmails: 8-12 for balanced analysis, more emails provide better patterns
-  //   but increase processing time
-  manuallyLabeledInvoicesLabel: "tickets/facturas", // Gmail label for manually identified invoices
-  useHistoricalPatterns: true, // Whether to use historical pattern analysis
-  maxHistoricalEmails: 12, // Maximum number of historical emails to analyze per sender
-
-  //=============================================================================
   // TECHNICAL SETTINGS - Advanced settings for script operation
   //=============================================================================
 
@@ -206,13 +110,51 @@ const CONFIG = {
   maxRetries: 3, // Maximum number of retry attempts for operations
   retryDelay: 1000, // Initial delay in milliseconds before first retry
   maxRetryDelay: 10000, // Maximum delay between retries (for exponential backoff)
-
-  // No additional technical settings at this time
+  logLevel: "INFO", // DEBUG | INFO | WARNING | ERROR
 };
 
 //=============================================================================
 // UTILS - UTILITIES
 //=============================================================================
+
+/**
+ * Builds a per-user lock key for script properties.
+ *
+ * @param {string} userEmail - User email used to scope the lock
+ * @returns {string} Stable script property key for this user
+ */
+function getExecutionLockKey(userEmail) {
+  const email = (userEmail || Session.getEffectiveUser().getEmail()).toLowerCase();
+  const normalizedEmail = email.replace(/[^a-z0-9]/g, "_");
+  return `EXECUTION_LOCK_${normalizedEmail}`;
+}
+
+/**
+ * Cleans up the legacy global lock key when it is invalid or expired.
+ * Kept temporarily for backward compatibility during migration to per-user locks.
+ */
+function cleanupLegacyExecutionLock() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const legacyKey = "EXECUTION_LOCK";
+  const legacyInfo = scriptProperties.getProperty(legacyKey);
+
+  if (!legacyInfo) return;
+
+  try {
+    const lockData = JSON.parse(legacyInfo);
+    const lockTime = lockData.timestamp;
+    const now = new Date().getTime();
+    const isExpired = now - lockTime >= CONFIG.executionLockTime * 60 * 1000;
+
+    if (isExpired) {
+      scriptProperties.deleteProperty(legacyKey);
+      logWithUser("Removed expired legacy global execution lock", "INFO");
+    }
+  } catch (e) {
+    scriptProperties.deleteProperty(legacyKey);
+    logWithUser("Removed invalid legacy global execution lock", "INFO");
+  }
+}
 
 /**
  * Helper function to create consistent log entries with user information
@@ -230,15 +172,37 @@ const CONFIG = {
  * 3. Format the log message with timestamp, level, user email, and the provided message
  * 4. Write the formatted message to the Apps Script log using Logger.log()
  */
+const LOG_LEVEL_PRIORITY = {
+  DEBUG: 10,
+  INFO: 20,
+  WARNING: 30,
+  ERROR: 40,
+};
+
+/**
+ * Checks if a log level should be emitted under current configuration.
+ *
+ * @param {string} level - Candidate log level
+ * @returns {boolean} True when message should be logged
+ */
+function shouldLogLevel(level) {
+  const configured = String(CONFIG.logLevel || "INFO").toUpperCase();
+  const threshold = LOG_LEVEL_PRIORITY[configured] || LOG_LEVEL_PRIORITY.INFO;
+  const candidate = LOG_LEVEL_PRIORITY[String(level || "INFO").toUpperCase()];
+  return (candidate || LOG_LEVEL_PRIORITY.INFO) >= threshold;
+}
+
 function logWithUser(message, level = "INFO") {
   // Handle undefined or null message
   if (message === undefined || message === null) {
     message = "[No message provided]";
   }
+  const normalizedLevel = String(level || "INFO").toUpperCase();
+  if (!shouldLogLevel(normalizedLevel)) return;
 
   const userEmail = Session.getEffectiveUser().getEmail();
   const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] [${level}] [${userEmail}] ${message}`;
+  const logMessage = `[${timestamp}] [${normalizedLevel}] [${userEmail}] ${message}`;
   Logger.log(logMessage);
 }
 
@@ -370,10 +334,13 @@ function acquireExecutionLock(userEmail) {
     );
   }
   const scriptProperties = PropertiesService.getScriptProperties();
-  const lockKey = "EXECUTION_LOCK";
+  const lockKey = getExecutionLockKey(userEmail);
 
-  // Try to acquire LockService lock first
-  const lock = LockService.getScriptLock();
+  // Migration helper: clean old global lock key if it's stale/invalid.
+  cleanupLegacyExecutionLock();
+
+  // Try to acquire a per-user lock first (doesn't block other users).
+  const lock = LockService.getUserLock();
   try {
     if (lock.tryLock(30000)) {
       // Try to lock for 30 seconds
@@ -383,11 +350,11 @@ function acquireExecutionLock(userEmail) {
         timestamp: new Date().getTime(),
       };
       scriptProperties.setProperty(lockKey, JSON.stringify(lockData));
-      logWithUser(`Lock acquired by ${userEmail} using LockService`);
+      logWithUser(`Lock acquired by ${userEmail} using UserLock`);
       return true;
     }
   } catch (e) {
-    logWithUser(`LockService failed: ${e.message}`, "WARNING");
+    logWithUser(`UserLock failed: ${e.message}`, "WARNING");
   }
 
   // Fallback to script properties lock
@@ -454,17 +421,17 @@ function releaseExecutionLock(userEmail) {
     );
   }
   const scriptProperties = PropertiesService.getScriptProperties();
-  const lockKey = "EXECUTION_LOCK";
+  const lockKey = getExecutionLockKey(userEmail);
 
-  // Try to release LockService lock first
-  const lock = LockService.getScriptLock();
+  // Try to release per-user LockService lock first
+  const lock = LockService.getUserLock();
   try {
     if (lock.hasLock()) {
       lock.releaseLock();
-      logWithUser("Released LockService lock");
+      logWithUser("Released UserLock lock");
     }
   } catch (e) {
-    logWithUser(`Error releasing LockService lock: ${e.message}`, "WARNING");
+    logWithUser(`Error releasing UserLock lock: ${e.message}`, "WARNING");
   }
 
   // Release script properties lock
@@ -540,6 +507,43 @@ function extractDomain(email) {
 }
 
 /**
+ * Extracts unique external recipient domains from a Gmail message.
+ *
+ * Parses To: and CC: fields, removes the sender's own domain and any
+ * domain in CONFIG.skipDomains, and returns deduplicated external domains.
+ * Used to route sent-email attachments to recipient domain folders.
+ *
+ * @param {GmailMessage} message - The Gmail message to inspect
+ * @param {string} ownDomain - The current user's domain to exclude
+ * @returns {string[]} Unique external domain strings (may be empty)
+ */
+function extractExternalRecipientDomains(message, ownDomain) {
+  const toField = message.getTo() || "";
+  const ccField = message.getCc() || "";
+  const combined = [toField, ccField].join(",");
+
+  if (!combined.trim()) return [];
+
+  const seen = new Set();
+  // Gmail normalises To:/CC: headers before returning them, so quoted display-name
+  // commas (RFC 5322) are not a concern in practice.
+  combined.split(",").forEach(function(addr) {
+    const domain = extractDomain(addr.trim());
+    if (
+      domain !== "unknown" &&
+      domain !== ownDomain &&
+      // Uses script-level CONFIG.skipDomains (not per-user skipDomains), consistent
+      // with sender-domain filtering elsewhere in GmailProcessing.gs.
+      !CONFIG.skipDomains.includes(domain)
+    ) {
+      seen.add(domain);
+    }
+  });
+
+  return Array.from(seen);
+}
+
+/**
  * Test function to verify if the folder ID is valid
  * This function can be run directly from the Apps Script editor
  * to check if the configured folder ID is correct
@@ -563,1493 +567,6 @@ function testFolderId() {
     return { success: false, error: e.message, folderId: CONFIG.mainFolderId };
   }
 }
-
-//=============================================================================
-// HISTORICALPATTERNS - HISTORICAL PATTERN ANALYSIS
-//=============================================================================
-
-/**
- * Gets historical invoice patterns from emails with the same sender
- * that have been manually labeled with the configured label
- *
- * @param {string} senderEmail - Email address of the sender
- * @returns {Object|null} Patterns detected in historical invoices, or null if disabled
- */
-function getHistoricalInvoicePatterns(senderEmail) {
-  // Only proceed if feature is enabled and label is configured
-  if (!CONFIG.useHistoricalPatterns || !CONFIG.manuallyLabeledInvoicesLabel) {
-    return null;
-  }
-
-  try {
-    // Use the full sender email for more accurate internal Gmail search
-    const searchQuery = `from:(${senderEmail}) label:${CONFIG.manuallyLabeledInvoicesLabel}`;
-    const threads = GmailApp.search(searchQuery, 0, CONFIG.maxHistoricalEmails);
-
-    logWithUser(
-      `Found ${threads.length} historical emails from ${senderEmail} with label "${CONFIG.manuallyLabeledInvoicesLabel}"`,
-      "INFO"
-    );
-
-    if (threads.length === 0) {
-      return null;
-    }
-
-    // Collect metadata from these historical invoices
-    const subjects = [];
-    const dates = [];
-
-    for (const thread of threads) {
-      const messages = thread.getMessages();
-      if (messages.length > 0) {
-        const message = messages[0]; // Get the first message in each thread
-        subjects.push(message.getSubject());
-        dates.push(message.getDate());
-      }
-    }
-
-    // Extract patterns
-    const patterns = {
-      count: threads.length,
-      subjectPatterns: extractSubjectPatterns(subjects),
-      datePatterns: extractDatePatterns(dates),
-      // For internal use only (not sent to AI)
-      rawSubjects: subjects,
-      rawDates: dates.map((d) => d.toISOString()),
-    };
-
-    return patterns;
-  } catch (error) {
-    logWithUser(
-      `Error getting historical invoice patterns: ${error.message}`,
-      "ERROR"
-    );
-    return null;
-  }
-}
-
-/**
- * Extracts patterns from email subjects
- *
- * @param {string[]} subjects - Array of email subjects
- * @returns {Object} Patterns found in subjects
- */
-function extractSubjectPatterns(subjects) {
-  if (!subjects || subjects.length === 0) {
-    return {};
-  }
-
-  try {
-    // Find common prefixes
-    let commonPrefix = subjects[0];
-    for (let i = 1; i < subjects.length; i++) {
-      let j = 0;
-      while (
-        j < commonPrefix.length &&
-        j < subjects[i].length &&
-        commonPrefix.charAt(j) === subjects[i].charAt(j)
-      ) {
-        j++;
-      }
-      commonPrefix = commonPrefix.substring(0, j);
-    }
-
-    // Find common suffixes
-    let commonSuffix = subjects[0];
-    for (let i = 1; i < subjects.length; i++) {
-      let j = 0;
-      while (
-        j < commonSuffix.length &&
-        j < subjects[i].length &&
-        commonSuffix.charAt(commonSuffix.length - 1 - j) ===
-          subjects[i].charAt(subjects[i].length - 1 - j)
-      ) {
-        j++;
-      }
-      commonSuffix = commonSuffix.substring(commonSuffix.length - j);
-    }
-
-    // Check for invoice keywords
-    const containsInvoiceTerms = subjects.some((subject) =>
-      CONFIG.invoiceKeywords.some((keyword) =>
-        subject.toLowerCase().includes(keyword.toLowerCase())
-      )
-    );
-
-    // Check for numeric patterns (like invoice numbers)
-    const numericPatterns = [];
-    const numericRegex = /\d+/g;
-
-    subjects.forEach((subject) => {
-      const matches = subject.match(numericRegex);
-      if (matches) {
-        numericPatterns.push(...matches);
-      }
-    });
-
-    return {
-      commonPrefix: commonPrefix.length > 3 ? commonPrefix.trim() : "",
-      commonSuffix: commonSuffix.length > 3 ? commonSuffix.trim() : "",
-      containsInvoiceTerms: containsInvoiceTerms,
-      hasNumericPatterns: numericPatterns.length > 0,
-    };
-  } catch (error) {
-    logWithUser(`Error extracting subject patterns: ${error.message}`, "ERROR");
-    return {};
-  }
-}
-
-/**
- * Extracts patterns from email dates
- *
- * @param {Date[]} dates - Array of email dates
- * @returns {Object} Patterns found in dates
- */
-function extractDatePatterns(dates) {
-  if (!dates || dates.length < 2) {
-    return { frequency: "unknown" };
-  }
-
-  try {
-    // Sort dates chronologically
-    dates.sort((a, b) => a - b);
-
-    // Calculate intervals between dates in days
-    const intervals = [];
-    for (let i = 1; i < dates.length; i++) {
-      const diffTime = Math.abs(dates[i] - dates[i - 1]);
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      intervals.push(diffDays);
-    }
-
-    // Analyze frequency
-    const avgInterval =
-      intervals.reduce((sum, days) => sum + days, 0) / intervals.length;
-
-    let frequency = "irregular";
-
-    if (avgInterval >= 25 && avgInterval <= 35) {
-      frequency = "monthly";
-    } else if (avgInterval >= 85 && avgInterval <= 95) {
-      frequency = "quarterly";
-    } else if (avgInterval >= 175 && avgInterval <= 190) {
-      frequency = "biannual";
-    } else if (avgInterval >= 350 && avgInterval <= 380) {
-      frequency = "annual";
-    } else if (avgInterval >= 13 && avgInterval <= 16) {
-      frequency = "biweekly";
-    } else if (avgInterval >= 6 && avgInterval <= 8) {
-      frequency = "weekly";
-    }
-
-    // Check if dates fall on same day of month
-    const daysOfMonth = dates.map((d) => d.getDate());
-    const uniqueDaysOfMonth = [...new Set(daysOfMonth)];
-    const sameDayOfMonth = uniqueDaysOfMonth.length === 1;
-
-    return {
-      frequency: frequency,
-      averageIntervalDays: Math.round(avgInterval),
-      sameDayOfMonth: sameDayOfMonth,
-      dayOfMonth: sameDayOfMonth ? daysOfMonth[0] : null,
-    };
-  } catch (error) {
-    logWithUser(`Error extracting date patterns: ${error.message}`, "ERROR");
-    return { frequency: "unknown" };
-  }
-}
-
-/**
- * Formats historical patterns into a human-readable description
- * for inclusion in AI prompts
- *
- * @param {Object} patterns - The patterns object from getHistoricalInvoicePatterns
- * @returns {string} Human-readable description of patterns
- */
-function formatHistoricalPatternsForPrompt(patterns) {
-  if (!patterns || patterns.count === 0) {
-    return "";
-  }
-
-  try {
-    let description = `\nHistorical context: The sender domain has ${patterns.count} previous emails that were manually labeled as invoices.\n\n`;
-
-    // Subject patterns
-    if (patterns.subjectPatterns) {
-      description += "Subject patterns:\n";
-
-      if (patterns.subjectPatterns.commonPrefix) {
-        description += `- Subjects often start with: "${patterns.subjectPatterns.commonPrefix}"\n`;
-      }
-
-      if (patterns.subjectPatterns.commonSuffix) {
-        description += `- Subjects often end with: "${patterns.subjectPatterns.commonSuffix}"\n`;
-      }
-
-      if (patterns.subjectPatterns.containsInvoiceTerms) {
-        description += "- Subjects typically contain invoice-related terms\n";
-      }
-
-      if (patterns.subjectPatterns.hasNumericPatterns) {
-        description +=
-          "- Subjects often contain numeric patterns (like invoice numbers)\n";
-      }
-    }
-
-    // Date patterns
-    if (patterns.datePatterns) {
-      description += "\nTiming patterns:\n";
-
-      if (
-        patterns.datePatterns.frequency !== "unknown" &&
-        patterns.datePatterns.frequency !== "irregular"
-      ) {
-        description += `- Emails are typically sent ${patterns.datePatterns.frequency}\n`;
-      }
-
-      if (patterns.datePatterns.sameDayOfMonth) {
-        description += `- Emails are typically sent on day ${patterns.datePatterns.dayOfMonth} of the month\n`;
-      }
-
-      if (patterns.datePatterns.frequency === "irregular") {
-        description += `- Average interval between emails: ${patterns.datePatterns.averageIntervalDays} days\n`;
-      }
-    }
-
-    return description;
-  } catch (error) {
-    logWithUser(
-      `Error formatting historical patterns: ${error.message}`,
-      "ERROR"
-    );
-    return "";
-  }
-}
-
-// Make functions available to other modules
-var HistoricalPatterns = {
-  getHistoricalInvoicePatterns: getHistoricalInvoicePatterns,
-  formatHistoricalPatternsForPrompt: formatHistoricalPatternsForPrompt,
-};
-
-//=============================================================================
-// OPENAIDETECTION - OPENAI DETECTION
-//=============================================================================
-
-/**
- * Makes an API call to OpenAI
- *
- * @param {string} content - The content to analyze
- * @param {Object} options - Additional options for the API call
- * @returns {Object} The API response
- */
-function callOpenAIAPI(content, options = {}) {
-  try {
-    // Get the API key
-    const apiKey = getOpenAIApiKey();
-    if (!apiKey) {
-      throw new Error("OpenAI API key not found");
-    }
-
-    // Default options
-    const defaultOptions = {
-      model: CONFIG.openAIModel,
-      temperature: CONFIG.openAITemperature,
-      max_tokens: CONFIG.openAIMaxTokens,
-    };
-
-    // Merge default options with provided options
-    const finalOptions = { ...defaultOptions, ...options };
-
-    // Prepare the request payload
-    const payload = {
-      model: finalOptions.model,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are an assistant that analyzes emails to determine if they contain invoices or bills. Be very precise and conservative in your analysis - only respond with 'yes' if you are highly confident the email is specifically about an invoice, bill, or receipt that requires payment.\n\nCheck the content in both English and Spanish languages.\n\nAn invoice typically contains:\n- A clear request for payment\n- An invoice number or reference\n- A specific amount to be paid\n- Payment instructions or terms\n\nJust mentioning words like 'invoice', 'bill', 'receipt', 'factura', 'recibo', or 'pago' is NOT enough to classify as an invoice. The email must be specifically about a payment document.\n\nRespond with 'yes' ONLY if the email is clearly about an actual invoice or bill. Otherwise, respond with 'no'.",
-        },
-        {
-          role: "user",
-          content: content,
-        },
-      ],
-      temperature: finalOptions.temperature,
-      max_tokens: finalOptions.max_tokens,
-    };
-
-    // Make the API request
-    const response = UrlFetchApp.fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "post",
-        headers: {
-          Authorization: "Bearer " + apiKey,
-          "Content-Type": "application/json",
-        },
-        payload: JSON.stringify(payload),
-        muteHttpExceptions: true,
-      }
-    );
-
-    // Parse and return the response
-    const responseData = JSON.parse(response.getContentText());
-
-    // Check for errors in the response
-    if (response.getResponseCode() !== 200) {
-      throw new Error(
-        `API Error: ${responseData.error?.message || "Unknown error"}`
-      );
-    }
-
-    return responseData;
-  } catch (error) {
-    logWithUser(`OpenAI API call failed: ${error.message}`, "ERROR");
-    throw error;
-  }
-}
-
-/**
- * Analyzes an email to determine if it contains an invoice
- *
- * @param {GmailMessage} message - The Gmail message to analyze
- * @returns {boolean} True if the message likely contains an invoice
- */
-function analyzeEmail(message) {
-  try {
-    // Get the content to analyze
-    const content = getTextContentToAnalyze(message);
-
-    // Format the prompt
-    const formattedContent = formatPrompt(content);
-
-    // Call the OpenAI API
-    const response = callOpenAIAPI(formattedContent);
-
-    // Parse the response
-    return parseResponse(response);
-  } catch (error) {
-    logWithUser(`Email analysis failed: ${error.message}`, "ERROR");
-    throw error;
-  }
-}
-
-/**
- * Main function to determine if a message contains an invoice using OpenAI
- *
- * @param {GmailMessage} message - The Gmail message to analyze
- * @returns {boolean} True if the message likely contains an invoice
- */
-function isInvoiceWithOpenAI(message) {
-  try {
-    // Check if OpenAI is enabled
-    if (CONFIG.invoiceDetection !== "openai") {
-      logWithUser(
-        "OpenAI invoice detection is disabled in configuration",
-        "INFO"
-      );
-      return false;
-    }
-
-    // Log the message subject for debugging
-    const subject = message.getSubject() || "(no subject)";
-    logWithUser(
-      `Analyzing message with subject: "${subject}" using OpenAI`,
-      "INFO"
-    );
-
-    // Check if sender domain should be skipped
-    const sender = message.getFrom();
-    const domain = extractDomain(sender);
-    logWithUser(`Message sender: ${sender}, domain: ${domain}`, "INFO");
-
-    if (CONFIG.skipAIForDomains && CONFIG.skipAIForDomains.includes(domain)) {
-      logWithUser(
-        `Skipping OpenAI for domain ${domain} (in skipAIForDomains list)`,
-        "INFO"
-      );
-      return false;
-    }
-
-    // Check for PDF attachments if configured
-    if (CONFIG.onlyAnalyzePDFs) {
-      const attachments = message.getAttachments();
-      logWithUser(`Message has ${attachments.length} attachments`, "INFO");
-
-      let hasPDF = false;
-      for (const attachment of attachments) {
-        const fileName = attachment.getName().toLowerCase();
-        const contentType = attachment.getContentType().toLowerCase();
-        logWithUser(
-          `Checking attachment: ${fileName}, type: ${contentType}`,
-          "INFO"
-        );
-
-        if (CONFIG.strictPdfCheck) {
-          if (fileName.endsWith(".pdf") && contentType.includes("pdf")) {
-            hasPDF = true;
-            logWithUser(`Found PDF attachment: ${fileName}`, "INFO");
-            break;
-          }
-        } else if (fileName.endsWith(".pdf")) {
-          hasPDF = true;
-          logWithUser(`Found PDF attachment: ${fileName}`, "INFO");
-          break;
-        }
-      }
-
-      if (!hasPDF) {
-        logWithUser(
-          `No PDF attachments found, skipping OpenAI analysis`,
-          "INFO"
-        );
-        return CONFIG.fallbackToKeywords ? checkKeywords(message) : false;
-      }
-    }
-
-    // Analyze the email
-    logWithUser(`Starting OpenAI analysis for message: "${subject}"`, "INFO");
-    const isInvoice = analyzeEmail(message);
-    logWithUser(`OpenAI invoice detection result: ${isInvoice}`, "INFO");
-
-    return isInvoice;
-  } catch (error) {
-    logWithUser(`OpenAI invoice detection failed: ${error.message}`, "ERROR");
-    // Return false on error, caller can decide to fall back to keywords
-    return false;
-  }
-}
-
-/**
- * Extracts relevant text content from a Gmail message for analysis
- *
- * @param {GmailMessage} message - The Gmail message to extract content from
- * @returns {Object} Object containing subject, body, and historical patterns
- */
-function getTextContentToAnalyze(message) {
-  try {
-    const subject = message.getSubject() || "";
-    let body = "";
-
-    // Try to get plain text body
-    try {
-      body = message.getPlainBody() || "";
-
-      // Truncate body if it's too long (to save tokens)
-      if (body.length > 1500) {
-        body = body.substring(0, 1500) + "...";
-      }
-    } catch (e) {
-      logWithUser(`Could not get message body: ${e.message}`, "WARNING");
-    }
-
-    // Get historical patterns if enabled
-    let historicalPatterns = null;
-    if (CONFIG.useHistoricalPatterns && CONFIG.manuallyLabeledInvoicesLabel) {
-      historicalPatterns = HistoricalPatterns.getHistoricalInvoicePatterns(
-        message.getFrom()
-      );
-    }
-
-    return {
-      subject: subject,
-      body: body,
-      sender: message.getFrom() || "",
-      date: message.getDate().toISOString(),
-      historicalPatterns: historicalPatterns,
-    };
-  } catch (error) {
-    logWithUser(`Error extracting message content: ${error.message}`, "ERROR");
-    // Return minimal content on error
-    return {
-      subject: message.getSubject() || "",
-      body: "",
-      sender: message.getFrom() || "",
-      date: message.getDate().toISOString(),
-    };
-  }
-}
-
-/**
- * Formats the email content into a prompt for the OpenAI API
- *
- * @param {Object} content - The email content to format
- * @returns {string} Formatted prompt
- */
-function formatPrompt(content) {
-  try {
-    // Get historical patterns if available
-    let historicalContext = "";
-    if (content.historicalPatterns && content.historicalPatterns.count > 0) {
-      historicalContext = HistoricalPatterns.formatHistoricalPatternsForPrompt(
-        content.historicalPatterns
-      );
-    }
-
-    return `
-Please analyze this email and determine if it contains an invoice or bill.
-Respond with only 'yes' or 'no'.
-${historicalContext}
-From: ${content.sender}
-Date: ${content.date}
-Subject: ${content.subject}
-
-${content.body}
-`;
-  } catch (error) {
-    logWithUser(`Error formatting prompt: ${error.message}`, "ERROR");
-    // Return a simplified prompt on error
-    return `Subject: ${content.subject}\n\nIs this an invoice or bill? Answer yes or no.`;
-  }
-}
-
-/**
- * Parses the OpenAI API response to determine if the message contains an invoice
- *
- * @param {Object} response - The API response to parse
- * @returns {boolean} True if the message likely contains an invoice
- */
-function parseResponse(response) {
-  try {
-    // Extract the response text
-    const responseText = response.choices[0].message.content
-      .trim()
-      .toLowerCase();
-
-    // Log the raw response for debugging
-    logWithUser(`OpenAI raw response: "${responseText}"`, "INFO");
-
-    // Check if the response indicates an invoice
-    // We're looking for "yes" or variations like "yes, it is an invoice"
-    return responseText.includes("yes");
-  } catch (error) {
-    logWithUser(`Error parsing API response: ${error.message}`, "ERROR");
-    throw error;
-  }
-}
-
-/**
- * Verifies if there is an API key available, using first the configuration and then
- * the script properties as a backup
- *
- * @returns {string|null} The API key if found, null otherwise
- */
-function getOpenAIApiKey() {
-  // First check if the key is in CONFIG and not the placeholder
-  if (CONFIG.openAIApiKey && CONFIG.openAIApiKey !== "__OPENAI_API_KEY__") {
-    return CONFIG.openAIApiKey;
-  }
-
-  // Then try to get it from script properties
-  try {
-    const apiKey = PropertiesService.getScriptProperties().getProperty(
-      CONFIG.openAIApiKeyPropertyName
-    );
-    return apiKey;
-  } catch (error) {
-    logWithUser(`Error retrieving API key: ${error.message}`, "ERROR");
-    return null;
-  }
-}
-
-/**
- * Stores the OpenAI API key securely in Script Properties
- *
- * @param {string} apiKey - The OpenAI API key to store
- * @returns {boolean} True if successful, false otherwise
- */
-function storeOpenAIApiKey(apiKey) {
-  try {
-    PropertiesService.getScriptProperties().setProperty(
-      CONFIG.openAIApiKeyPropertyName,
-      apiKey
-    );
-    return true;
-  } catch (error) {
-    logWithUser(`Error storing API key: ${error.message}`, "ERROR");
-    return false;
-  }
-}
-
-/**
- * Test function to verify OpenAI API connectivity
- * This function can be run directly from the Apps Script editor
- * to check if the configured API key is correct
- */
-function testOpenAIConnection() {
-  try {
-    const testPrompt = "Is this a test?";
-    const response = callOpenAIAPI(testPrompt);
-
-    Logger.log(
-      `Successfully connected to OpenAI API. Response: ${JSON.stringify(
-        response
-      )}`
-    );
-    return {
-      success: true,
-      response: response,
-    };
-  } catch (e) {
-    Logger.log(`Error connecting to OpenAI API: ${e.message}`);
-    return {
-      success: false,
-      error: e.message,
-    };
-  }
-}
-
-// Make functions available to other modules
-var OpenAIDetection = {
-  isInvoiceWithOpenAI: isInvoiceWithOpenAI,
-  testOpenAIConnection: testOpenAIConnection,
-  storeOpenAIApiKey: storeOpenAIApiKey,
-};
-
-//=============================================================================
-// GEMINIDETECTION - GEMINI DETECTION
-//=============================================================================
-
-/**
- * Makes an API call to Google Gemini
- *
- * @param {string} prompt - The prompt to send to Gemini
- * @param {Object} options - Additional options for the API call
- * @returns {Object} The API response
- */
-function callGeminiAPI(prompt, options = {}) {
-  try {
-    // Get the API key
-    const apiKey = getGeminiApiKey();
-    if (!apiKey) {
-      throw new Error("Gemini API key not found");
-    }
-
-    // Default options
-    const defaultOptions = {
-      model: CONFIG.geminiModel,
-      temperature: CONFIG.geminiTemperature,
-      maxOutputTokens: CONFIG.geminiMaxTokens,
-    };
-
-    // Merge default options with provided options
-    const finalOptions = { ...defaultOptions, ...options };
-
-    // Prepare the request payload
-    const payload = {
-      contents: [
-        {
-          parts: [{ text: prompt }],
-        },
-      ],
-      generationConfig: {
-        temperature: finalOptions.temperature,
-        maxOutputTokens: finalOptions.maxOutputTokens,
-      },
-    };
-
-    // Try v1 API first (newer version)
-    let url =
-      "https://generativelanguage.googleapis.com/v1/models/" +
-      finalOptions.model +
-      ":generateContent";
-
-    try {
-      // Make the API request to v1 endpoint
-      const response = UrlFetchApp.fetch(`${url}?key=${apiKey}`, {
-        method: "post",
-        contentType: "application/json",
-        payload: JSON.stringify(payload),
-        muteHttpExceptions: true,
-      });
-
-      // Parse the response
-      const responseData = JSON.parse(response.getContentText());
-
-      // Check for errors in the response
-      if (response.getResponseCode() !== 200) {
-        throw new Error(
-          `API Error: ${responseData.error?.message || "Unknown error"}`
-        );
-      }
-
-      // Extract the text response
-      const responseText = responseData.candidates[0].content.parts[0].text;
-      logWithUser("Successfully used Gemini API v1 endpoint", "INFO");
-      return responseText;
-    } catch (v1Error) {
-      // Log the error but don't throw yet
-      logWithUser(
-        `Gemini API v1 endpoint failed: ${v1Error.message}, trying v1beta...`,
-        "WARNING"
-      );
-
-      // Fall back to v1beta API
-      url =
-        "https://generativelanguage.googleapis.com/v1beta/models/" +
-        finalOptions.model +
-        ":generateContent";
-
-      // Make the API request to v1beta endpoint
-      const response = UrlFetchApp.fetch(`${url}?key=${apiKey}`, {
-        method: "post",
-        contentType: "application/json",
-        payload: JSON.stringify(payload),
-        muteHttpExceptions: true,
-      });
-
-      // Parse the response
-      const responseData = JSON.parse(response.getContentText());
-
-      // Check for errors in the response
-      if (response.getResponseCode() !== 200) {
-        throw new Error(
-          `API Error: ${responseData.error?.message || "Unknown error"}`
-        );
-      }
-
-      // Extract the text response
-      const responseText = responseData.candidates[0].content.parts[0].text;
-      logWithUser("Successfully used Gemini API v1beta endpoint", "INFO");
-      return responseText;
-    }
-  } catch (error) {
-    logWithUser(`Gemini API call failed: ${error.message}`, "ERROR");
-    throw error;
-  }
-}
-
-/**
- * Extracts relevant keywords from email body without sending full content
- *
- * @param {string} body - The email body text
- * @returns {string[]} Array of extracted keywords and patterns
- */
-function extractKeywords(body) {
-  try {
-    // Extract only relevant terms without sending the full body
-    const relevantTerms = [];
-    CONFIG.invoiceKeywords.forEach((keyword) => {
-      if (body.toLowerCase().includes(keyword.toLowerCase())) {
-        relevantTerms.push(keyword);
-      }
-    });
-
-    // Look for numeric patterns that might be amounts or references
-    const amountPatterns =
-      body.match(/\$\s*\d+[.,]\d{2}|€\s*\d+[.,]\d{2}/g) || [];
-    const refPatterns = body.match(/ref\w*\s*:?\s*[A-Z0-9-]+/gi) || [];
-    const invoiceNumPatterns = body.match(/inv\w*\s*:?\s*[A-Z0-9-]+/gi) || [];
-
-    return [
-      ...relevantTerms,
-      ...amountPatterns,
-      ...refPatterns,
-      ...invoiceNumPatterns,
-    ];
-  } catch (error) {
-    logWithUser(`Error extracting keywords: ${error.message}`, "ERROR");
-    return [];
-  }
-}
-
-/**
- * Extracts metadata from a Gmail message for AI analysis
- * without sending the full content
- *
- * @param {GmailMessage} message - The Gmail message to extract metadata from
- * @returns {Object} Metadata object with privacy-safe information
- */
-function extractMetadata(message) {
-  try {
-    const subject = message.getSubject() || "";
-    const body = message.getPlainBody() || "";
-    const attachments = message.getAttachments() || [];
-
-    // Get attachment info
-    const attachmentInfo = attachments.map((attachment) => {
-      return {
-        name: attachment.getName(),
-        extension: attachment.getName().split(".").pop().toLowerCase(),
-        contentType: attachment.getContentType(),
-        size: attachment.getSize(),
-      };
-    });
-
-    // Get historical patterns if enabled
-    let historicalPatterns = null;
-    if (CONFIG.useHistoricalPatterns && CONFIG.manuallyLabeledInvoicesLabel) {
-      historicalPatterns = HistoricalPatterns.getHistoricalInvoicePatterns(
-        message.getFrom()
-      );
-    }
-
-    // Get sender information
-    const sender = message.getFrom() || "";
-    const senderDomain = extractDomain(sender);
-
-    // Anonymize sender email (only keep domain)
-    const anonymizedSender = `user@${senderDomain}`;
-
-    // Create metadata object with only necessary information
-    // Avoid sending any personally identifiable information
-    return {
-      subject: subject,
-      senderDomain: senderDomain, // Only send domain, not full email
-      date: message.getDate().toISOString(),
-      hasAttachments: attachments.length > 0,
-      attachmentTypes: attachmentInfo.map((a) => a.extension),
-      attachmentContentTypes: attachmentInfo.map((a) => a.contentType),
-      keywordsFound: extractKeywords(body),
-      historicalPatterns: historicalPatterns,
-    };
-  } catch (error) {
-    logWithUser(`Error extracting message metadata: ${error.message}`, "ERROR");
-    // Return minimal metadata on error, still ensuring privacy
-    const errorSenderDomain = extractDomain(message.getFrom() || "");
-    return {
-      subject: message.getSubject() || "",
-      senderDomain: errorSenderDomain, // Only include domain, not full email
-      hasAttachments: false,
-      attachmentTypes: [],
-      attachmentContentTypes: [],
-      keywordsFound: [],
-    };
-  }
-}
-
-/**
- * Formats the metadata into a prompt for the Gemini API
- *
- * @param {Object} metadata - The email metadata to format
- * @returns {string} Formatted prompt
- */
-function formatPrompt(metadata) {
-  try {
-    // Get historical patterns if available
-    let historicalContext = "";
-    if (metadata.historicalPatterns && metadata.historicalPatterns.count > 0) {
-      historicalContext = HistoricalPatterns.formatHistoricalPatternsForPrompt(
-        metadata.historicalPatterns
-      );
-    }
-
-    return `
-Based on these email metadata, assess the likelihood that this contains an invoice.
-You don't have access to the full content for privacy reasons.
-${historicalContext}
-Metadata: ${JSON.stringify(metadata, null, 2)}
-
-An invoice typically contains:
-- A clear request for payment
-- An invoice number or reference
-- A specific amount to be paid
-- Payment instructions or terms
-
-Just mentioning words like 'invoice', 'bill', 'receipt', etc. is NOT enough to classify as an invoice.
-The email must be specifically about a payment document.
-
-On a scale from 0.0 to 1.0, where:
-- 0.0 means definitely NOT an invoice
-- 1.0 means definitely IS an invoice
-
-Provide ONLY a single number between 0.0 and 1.0 representing your confidence.
-Example responses: "0.2", "0.85", "0.99"
-`;
-  } catch (error) {
-    logWithUser(`Error formatting prompt: ${error.message}`, "ERROR");
-    // Return a simplified prompt on error
-    return `Based on this subject: "${metadata.subject}", on a scale from 0.0 to 1.0, what's the likelihood this is an invoice? Respond with only a number.`;
-  }
-}
-
-/**
- * Parses the Gemini API response to extract confidence score
- *
- * @param {string} response - The API response to parse
- * @returns {number} Confidence score between 0 and 1
- */
-function parseGeminiResponse(response) {
-  try {
-    // Extract the text response and clean it
-    const responseText = response.trim();
-
-    // Try to extract a number from the response
-    const confidenceMatch = responseText.match(/(\d+\.\d+|\d+)/);
-
-    if (confidenceMatch) {
-      const confidence = parseFloat(confidenceMatch[0]);
-
-      // Validate that it's a number between 0 and 1
-      if (!isNaN(confidence) && confidence >= 0 && confidence <= 1) {
-        logWithUser(`Gemini confidence score: ${confidence}`, "INFO");
-        return confidence;
-      }
-    }
-
-    // If we couldn't extract a valid confidence score, log warning and return 0
-    logWithUser(
-      `Could not extract valid confidence score from response: "${responseText}"`,
-      "WARNING"
-    );
-    return 0;
-  } catch (error) {
-    logWithUser(`Error parsing Gemini response: ${error.message}`, "ERROR");
-    return 0;
-  }
-}
-
-/**
- * Analyzes an email to determine if it contains an invoice
- *
- * @param {GmailMessage} message - The Gmail message to analyze
- * @returns {number} Confidence score between 0 and 1
- */
-function analyzeEmail(message) {
-  try {
-    // Extract metadata (not full content)
-    const metadata = extractMetadata(message);
-
-    // Format the prompt
-    const formattedPrompt = formatPrompt(metadata);
-
-    // Log the formatted prompt
-    logWithUser(
-      `Formatted prompt with metadata for Gemini: ${formattedPrompt}`,
-      "DEBUG"
-    );
-
-    // Call the Gemini API
-    const response = callGeminiAPI(formattedPrompt);
-
-    // Parse the response to get confidence score
-    return parseGeminiResponse(response);
-  } catch (error) {
-    logWithUser(`Email analysis failed: ${error.message}`, "ERROR");
-    return 0; // Return 0 confidence on error
-  }
-}
-
-/**
- * Main function to determine if a message contains an invoice using Gemini
- *
- * @param {GmailMessage} message - The Gmail message to analyze
- * @returns {boolean} True if the message likely contains an invoice
- */
-function isInvoiceWithGemini(message) {
-  try {
-    // Check if Gemini is enabled
-    if (CONFIG.invoiceDetection !== "gemini") {
-      logWithUser(
-        "Gemini invoice detection is disabled in configuration",
-        "INFO"
-      );
-      return false;
-    }
-
-    // Log the message subject for debugging
-    const subject = message.getSubject() || "(no subject)";
-    logWithUser(
-      `Analyzing message with subject: "${subject}" using Gemini`,
-      "INFO"
-    );
-
-    // Check if sender domain should be skipped
-    const sender = message.getFrom();
-    const domain = extractDomain(sender);
-
-    // Log only the domain, not the full email address
-    logWithUser(`Message domain: ${domain}`, "INFO");
-
-    if (CONFIG.skipAIForDomains && CONFIG.skipAIForDomains.includes(domain)) {
-      logWithUser(
-        `Skipping Gemini for domain ${domain} (in skipAIForDomains list)`,
-        "INFO"
-      );
-      return false;
-    }
-
-    // Check for PDF attachments if configured
-    if (CONFIG.onlyAnalyzePDFs) {
-      const attachments = message.getAttachments();
-      logWithUser(`Message has ${attachments.length} attachments`, "INFO");
-
-      let hasPDF = false;
-      for (const attachment of attachments) {
-        const fileName = attachment.getName().toLowerCase();
-        const contentType = attachment.getContentType().toLowerCase();
-        logWithUser(
-          `Checking attachment: ${fileName}, type: ${contentType}`,
-          "INFO"
-        );
-
-        if (CONFIG.strictPdfCheck) {
-          if (fileName.endsWith(".pdf") && contentType.includes("pdf")) {
-            hasPDF = true;
-            logWithUser(`Found PDF attachment: ${fileName}`, "INFO");
-            break;
-          }
-        } else if (fileName.endsWith(".pdf")) {
-          hasPDF = true;
-          logWithUser(`Found PDF attachment: ${fileName}`, "INFO");
-          break;
-        }
-      }
-
-      if (!hasPDF) {
-        logWithUser(
-          `No PDF attachments found, skipping Gemini analysis`,
-          "INFO"
-        );
-        return CONFIG.fallbackToKeywords ? checkKeywords(message) : false;
-      }
-    }
-
-    // Analyze the email to get confidence score
-    logWithUser(`Starting Gemini analysis for message: "${subject}"`, "INFO");
-    const confidence = analyzeEmail(message);
-
-    // Compare with threshold
-    const isInvoice = confidence >= CONFIG.aiConfidenceThreshold;
-    logWithUser(
-      `Gemini invoice detection result: ${isInvoice} (confidence: ${confidence}, threshold: ${CONFIG.aiConfidenceThreshold})`,
-      "INFO"
-    );
-
-    return isInvoice;
-  } catch (error) {
-    logWithUser(`Gemini invoice detection failed: ${error.message}`, "ERROR");
-    // Return false on error, caller can decide to fall back to keywords
-    return false;
-  }
-}
-
-/**
- * Verifies if there is an API key available, using first the configuration and then
- * the script properties as a backup
- *
- * @returns {string|null} The API key if found, null otherwise
- */
-function getGeminiApiKey() {
-  // First check if the key is in CONFIG and not the placeholder
-  if (CONFIG.geminiApiKey && CONFIG.geminiApiKey !== "__GEMINI_API_KEY__") {
-    return CONFIG.geminiApiKey;
-  }
-
-  // Then try to get it from script properties
-  try {
-    const apiKey = PropertiesService.getScriptProperties().getProperty(
-      CONFIG.geminiApiKeyPropertyName
-    );
-    return apiKey;
-  } catch (error) {
-    logWithUser(`Error retrieving Gemini API key: ${error.message}`, "ERROR");
-    return null;
-  }
-}
-
-/**
- * Stores the Gemini API key securely in Script Properties
- *
- * @param {string} apiKey - The Gemini API key to store
- * @returns {boolean} True if successful, false otherwise
- */
-function storeGeminiApiKey(apiKey) {
-  try {
-    PropertiesService.getScriptProperties().setProperty(
-      CONFIG.geminiApiKeyPropertyName,
-      apiKey
-    );
-    return true;
-  } catch (error) {
-    logWithUser(`Error storing Gemini API key: ${error.message}`, "ERROR");
-    return false;
-  }
-}
-
-/**
- * Test function to verify Gemini API connectivity
- * This function can be run directly from the Apps Script editor
- * to check if the configured API key is correct
- */
-function testGeminiConnection() {
-  try {
-    const testPrompt =
-      "On a scale from 0.0 to 1.0, how likely is this a test? Respond with only a number.";
-    const response = callGeminiAPI(testPrompt);
-
-    Logger.log(`Successfully connected to Gemini API. Response: ${response}`);
-    return {
-      success: true,
-      response: response,
-    };
-  } catch (e) {
-    Logger.log(`Error connecting to Gemini API: ${e.message}`);
-    return {
-      success: false,
-      error: e.message,
-    };
-  }
-}
-
-// Make functions available to other modules
-var GeminiDetection = {
-  isInvoiceWithGemini: isInvoiceWithGemini,
-  testGeminiConnection: testGeminiConnection,
-  storeGeminiApiKey: storeGeminiApiKey,
-};
-
-//=============================================================================
-// INVOICEDETECTION - EMAIL-BASED INVOICE DETECTION
-//=============================================================================
-
-/**
- * Checks if a sender is in the invoice senders list
- *
- * @param {string} sender - The email address of the sender
- * @returns {boolean} True if the sender is in the list
- */
-function isInvoiceSender(sender) {
-  try {
-    if (!sender) return false;
-
-    // Extract email from "Display Name <email@domain.com>" format if needed
-    const angleMatch = sender.match(/<([^>]+)>/);
-    const cleanSender = angleMatch ? angleMatch[1] : sender;
-
-    // Normalize the email to lowercase
-    const normalizedSender = cleanSender.toLowerCase();
-
-    // Extract the domain
-    const domain = extractDomain(normalizedSender);
-
-    // Extract the username (part before @)
-    const atIndex = normalizedSender.indexOf("@");
-    const username = atIndex > 0 ? normalizedSender.substring(0, atIndex) : "";
-
-    // Check for matches
-    for (const entry of INVOICE_SENDERS) {
-      const normalizedEntry = entry.toLowerCase();
-
-      // Case 1: Exact email match
-      if (normalizedSender === normalizedEntry) {
-        logWithUser(`Exact invoice sender match: ${sender}`, "INFO");
-        return true;
-      }
-
-      // Case 2: Domain-only match (entry is just a domain without @)
-      if (!normalizedEntry.includes("@") && domain === normalizedEntry) {
-        logWithUser(`Domain match for invoice sender: ${domain}`, "INFO");
-        return true;
-      }
-
-      // Case 3: Full wildcard match (*@domain.com)
-      if (
-        normalizedEntry.startsWith("*@") &&
-        domain === normalizedEntry.substring(2)
-      ) {
-        logWithUser(
-          `Wildcard domain match for invoice sender: ${domain}`,
-          "INFO"
-        );
-        return true;
-      }
-
-      // Case 4: Pattern matching with wildcards
-      if (normalizedEntry.includes("*") && normalizedEntry.includes("@")) {
-        // Extract pattern parts
-        const entryAtIndex = normalizedEntry.indexOf("@");
-        const entryUsername = normalizedEntry.substring(0, entryAtIndex);
-        const entryDomain = normalizedEntry.substring(entryAtIndex + 1);
-
-        // Only proceed if domains match
-        if (domain === entryDomain) {
-          // Handle prefix*@domain.com
-          if (entryUsername.endsWith("*") && !entryUsername.startsWith("*")) {
-            const prefix = entryUsername.substring(0, entryUsername.length - 1);
-            if (username.startsWith(prefix)) {
-              logWithUser(
-                `Prefix wildcard match for invoice sender: ${sender}`,
-                "INFO"
-              );
-              return true;
-            }
-          }
-          // Handle *suffix@domain.com
-          else if (
-            entryUsername.startsWith("*") &&
-            !entryUsername.endsWith("*")
-          ) {
-            const suffix = entryUsername.substring(1);
-            if (username.endsWith(suffix)) {
-              logWithUser(
-                `Suffix wildcard match for invoice sender: ${sender}`,
-                "INFO"
-              );
-              return true;
-            }
-          }
-          // Handle prefix*suffix@domain.com
-          else if (entryUsername.includes("*")) {
-            const parts = entryUsername.split("*");
-            const prefix = parts[0];
-            const suffix = parts[1];
-
-            if (username.startsWith(prefix) && username.endsWith(suffix)) {
-              logWithUser(
-                `Prefix-suffix wildcard match for invoice sender: ${sender}`,
-                "INFO"
-              );
-              return true;
-            }
-          }
-        }
-      }
-    }
-
-    return false;
-  } catch (error) {
-    logWithUser(`Error checking invoice sender: ${error.message}`, "ERROR");
-    return false;
-  }
-}
-
-// Export the function for use in other modules
-var InvoiceDetection = {
-  isInvoiceSender: isInvoiceSender,
-};
-
-//=============================================================================
-// VERIFYAPIKEYS - API KEY VERIFICATION
-//=============================================================================
-
-/**
- * Verifies if the Gemini API key is valid and working
- *
- * @returns {Object} Object with success status, details, and API information
- */
-function verifyGeminiAPIKey() {
-  try {
-    logWithUser("Starting Gemini API key verification...", "INFO");
-
-    // Step 1: Check if the API key exists in configuration or script properties
-    const apiKey = getGeminiApiKey();
-    if (!apiKey) {
-      return {
-        success: false,
-        message:
-          "Gemini API key not found in configuration or script properties",
-        details: {
-          configValue:
-            CONFIG.geminiApiKey === "__GEMINI_API_KEY__"
-              ? "Not set (placeholder)"
-              : "Set in CONFIG",
-          scriptPropertyName: CONFIG.geminiApiKeyPropertyName,
-          scriptPropertyValue: "Not available (null)",
-        },
-      };
-    }
-
-    // Step 2: Mask the API key for logging (show only first 4 and last 4 characters)
-    const maskedKey = maskAPIKey(apiKey);
-    logWithUser(`Found Gemini API key: ${maskedKey}`, "INFO");
-
-    // Step 3: Test the API connection
-    logWithUser("Testing Gemini API connection...", "INFO");
-    const testResult = GeminiDetection.testGeminiConnection();
-
-    if (testResult.success) {
-      return {
-        success: true,
-        message: "Gemini API key is valid and working correctly",
-        details: {
-          apiKeySource:
-            CONFIG.geminiApiKey !== "__GEMINI_API_KEY__"
-              ? "CONFIG"
-              : "Script Properties",
-          apiKeyLength: apiKey.length,
-          maskedKey: maskedKey,
-          model: CONFIG.geminiModel,
-          testResponse: testResult.response,
-        },
-      };
-    } else {
-      return {
-        success: false,
-        message: "Gemini API key validation failed",
-        details: {
-          apiKeySource:
-            CONFIG.geminiApiKey !== "__GEMINI_API_KEY__"
-              ? "CONFIG"
-              : "Script Properties",
-          apiKeyLength: apiKey.length,
-          maskedKey: maskedKey,
-          model: CONFIG.geminiModel,
-          error: testResult.error,
-        },
-      };
-    }
-  } catch (error) {
-    logWithUser(`Error verifying Gemini API key: ${error.message}`, "ERROR");
-    return {
-      success: false,
-      message: `Error verifying Gemini API key: ${error.message}`,
-      details: {
-        error: error.message,
-        stack: error.stack,
-      },
-    };
-  }
-}
-
-/**
- * Verifies if the OpenAI API key is valid and working
- *
- * @returns {Object} Object with success status, details, and API information
- */
-function verifyOpenAIAPIKey() {
-  try {
-    logWithUser("Starting OpenAI API key verification...", "INFO");
-
-    // Step 1: Check if the API key exists in configuration or script properties
-    const apiKey = getOpenAIApiKey();
-    if (!apiKey) {
-      return {
-        success: false,
-        message:
-          "OpenAI API key not found in configuration or script properties",
-        details: {
-          configValue:
-            CONFIG.openAIApiKey === "__OPENAI_API_KEY__"
-              ? "Not set (placeholder)"
-              : "Set in CONFIG",
-          scriptPropertyName: CONFIG.openAIApiKeyPropertyName,
-          scriptPropertyValue: "Not available (null)",
-        },
-      };
-    }
-
-    // Step 2: Mask the API key for logging (show only first 4 and last 4 characters)
-    const maskedKey = maskAPIKey(apiKey);
-    logWithUser(`Found OpenAI API key: ${maskedKey}`, "INFO");
-
-    // Step 3: Test the API connection
-    logWithUser("Testing OpenAI API connection...", "INFO");
-    const testResult = OpenAIDetection.testOpenAIConnection();
-
-    if (testResult.success) {
-      return {
-        success: true,
-        message: "OpenAI API key is valid and working correctly",
-        details: {
-          apiKeySource:
-            CONFIG.openAIApiKey !== "__OPENAI_API_KEY__"
-              ? "CONFIG"
-              : "Script Properties",
-          apiKeyLength: apiKey.length,
-          maskedKey: maskedKey,
-          model: CONFIG.openAIModel,
-          testResponse: "Response available (not shown for brevity)",
-        },
-      };
-    } else {
-      return {
-        success: false,
-        message: "OpenAI API key validation failed",
-        details: {
-          apiKeySource:
-            CONFIG.openAIApiKey !== "__OPENAI_API_KEY__"
-              ? "CONFIG"
-              : "Script Properties",
-          apiKeyLength: apiKey.length,
-          maskedKey: maskedKey,
-          model: CONFIG.openAIModel,
-          error: testResult.error,
-        },
-      };
-    }
-  } catch (error) {
-    logWithUser(`Error verifying OpenAI API key: ${error.message}`, "ERROR");
-    return {
-      success: false,
-      message: `Error verifying OpenAI API key: ${error.message}`,
-      details: {
-        error: error.message,
-        stack: error.stack,
-      },
-    };
-  }
-}
-
-/**
- * Verifies both Gemini and OpenAI API keys
- *
- * @returns {Object} Object with verification results for both APIs
- */
-function verifyAllAPIKeys() {
-  const results = {
-    gemini: verifyGeminiAPIKey(),
-    openai: verifyOpenAIAPIKey(),
-    timestamp: new Date().toISOString(),
-    config: {
-      invoiceDetection: CONFIG.invoiceDetection,
-      geminiModel: CONFIG.geminiModel,
-      openAIModel: CONFIG.openAIModel,
-    },
-  };
-
-  // Log a summary of the results
-  if (results.gemini.success && results.openai.success) {
-    logWithUser(
-      "✅ Both Gemini and OpenAI API keys are valid and working",
-      "INFO"
-    );
-  } else if (results.gemini.success) {
-    logWithUser(
-      "⚠️ Gemini API key is valid, but OpenAI API key validation failed",
-      "WARNING"
-    );
-  } else if (results.openai.success) {
-    logWithUser(
-      "⚠️ OpenAI API key is valid, but Gemini API key validation failed",
-      "WARNING"
-    );
-  } else {
-    logWithUser(
-      "❌ Both Gemini and OpenAI API key validations failed",
-      "ERROR"
-    );
-  }
-
-  return results;
-}
-
-/**
- * Helper function to mask an API key for safe logging
- * Shows only the first 4 and last 4 characters, with the rest masked
- *
- * @param {string} apiKey - The API key to mask
- * @returns {string} The masked API key
- */
-function maskAPIKey(apiKey) {
-  if (!apiKey || apiKey.length < 8) {
-    return "Invalid key (too short)";
-  }
-
-  const firstFour = apiKey.substring(0, 4);
-  const lastFour = apiKey.substring(apiKey.length - 4);
-  const maskedPortion = "*".repeat(Math.min(apiKey.length - 8, 10));
-
-  return `${firstFour}${maskedPortion}${lastFour} (${apiKey.length} chars)`;
-}
-
-// Make functions available to other modules
-var VerifyAPIKeys = {
-  verifyGeminiAPIKey: verifyGeminiAPIKey,
-  verifyOpenAIAPIKey: verifyOpenAIAPIKey,
-  verifyAllAPIKeys: verifyAllAPIKeys,
-};
 
 //=============================================================================
 // USERMANAGEMENT - USER MANAGEMENT
@@ -2414,41 +931,12 @@ function listUsers() {
  * @returns {string} Email address of the next user to process
  */
 function getNextUserInQueue() {
-  const scriptProperties = PropertiesService.getScriptProperties();
-  const queueKey = "USER_QUEUE";
-  const lastProcessedKey = "LAST_PROCESSED_USER";
-
-  try {
-    // Get the queue of users
-    let queue = JSON.parse(scriptProperties.getProperty(queueKey) || "[]");
-
-    // If queue is empty, refresh it with current authorized users
-    if (queue.length === 0) {
-      queue = getAuthorizedUsers();
-      scriptProperties.setProperty(queueKey, JSON.stringify(queue));
-    }
-
-    // Get the last processed user
-    const lastProcessed = scriptProperties.getProperty(lastProcessedKey);
-
-    // Find the next user in the queue
-    let nextUser;
-    if (lastProcessed) {
-      const lastIndex = queue.indexOf(lastProcessed);
-      nextUser = queue[(lastIndex + 1) % queue.length];
-    } else {
-      nextUser = queue[0];
-    }
-
-    // Update the last processed user
-    scriptProperties.setProperty(lastProcessedKey, nextUser);
-
-    logWithUser(`Next user in queue: ${nextUser}`, "INFO");
-    return nextUser;
-  } catch (e) {
-    logWithUser(`Error getting next user in queue: ${e.message}`, "ERROR");
-    return null;
-  }
+  const currentUser = Session.getEffectiveUser().getEmail();
+  logWithUser(
+    `Execution model "${CONFIG.executionModel}" active: queue disabled, using effective user ${currentUser}`,
+    "INFO"
+  );
+  return currentUser;
 }
 
 /**
@@ -2503,6 +991,390 @@ function verifyAllUsersPermissions() {
 }
 
 //=============================================================================
+// LABELMANAGEMENT - LABEL MANAGEMENT
+//=============================================================================
+
+/**
+ * Gets or creates a Gmail label by name
+ *
+ * @param {string} labelName - Label name to fetch/create
+ * @returns {GmailLabel} Gmail label instance
+ */
+function getOrCreateLabel(labelName) {
+  let label = GmailApp.getUserLabelByName(labelName);
+
+  if (!label) {
+    label = GmailApp.createLabel(labelName);
+    logWithUser(`Created new Gmail label: ${labelName}`);
+  } else {
+    logWithUser(`Using existing Gmail label: ${labelName}`);
+  }
+
+  return label;
+}
+
+/**
+ * Gets or creates the processed label
+ *
+ * @returns {GmailLabel} The Gmail label used to mark processed threads
+ */
+function getProcessedLabel() {
+  return getOrCreateLabel(CONFIG.processedLabelName);
+}
+
+/**
+ * Gets or creates the processing label
+ *
+ * @returns {GmailLabel} Label used while a thread is being processed
+ */
+function getProcessingLabel() {
+  return getOrCreateLabel(CONFIG.processingLabelName);
+}
+
+/**
+ * Gets or creates the error label
+ *
+ * @returns {GmailLabel} Label used when processing fails
+ */
+function getErrorLabel() {
+  return getOrCreateLabel(CONFIG.errorLabelName);
+}
+
+/**
+ * Gets or creates the permanent error label
+ *
+ * @returns {GmailLabel} Label used for non-retriable failures
+ */
+function getPermanentErrorLabel() {
+  return getOrCreateLabel(CONFIG.permanentErrorLabelName);
+}
+
+/**
+ * Gets or creates the too-large label
+ *
+ * @returns {GmailLabel} Label used when attachments exceed max size
+ */
+function getTooLargeLabel() {
+  return getOrCreateLabel(CONFIG.tooLargeLabelName);
+}
+
+//=============================================================================
+// THREADSTATE - THREAD STATE
+//=============================================================================
+
+// ---------------------------------------------------------------------------
+// Processing state (checkpoint / stale-recovery)
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds script-property key for per-thread processing state.
+ *
+ * @param {string} threadId - Gmail thread ID
+ * @returns {string} Script property key
+ */
+function buildThreadProcessingStateKey(threadId) {
+  return `THREAD_PROCESSING_${threadId}`;
+}
+
+/**
+ * Stores processing start state for a thread.
+ *
+ * @param {string} threadId - Gmail thread ID
+ * @param {string} userEmail - Effective execution user
+ */
+function markThreadProcessingState(threadId, userEmail) {
+  if (!threadId) return;
+  const state = {
+    user: userEmail || Session.getEffectiveUser().getEmail(),
+    timestamp: new Date().getTime(),
+  };
+  PropertiesService.getScriptProperties().setProperty(
+    buildThreadProcessingStateKey(threadId),
+    JSON.stringify(state)
+  );
+}
+
+/**
+ * Clears processing state checkpoint for a thread.
+ *
+ * @param {string} threadId - Gmail thread ID
+ */
+function clearThreadProcessingState(threadId) {
+  if (!threadId) return;
+  PropertiesService.getScriptProperties().deleteProperty(
+    buildThreadProcessingStateKey(threadId)
+  );
+}
+
+/**
+ * Reads processing state checkpoint for a thread.
+ *
+ * @param {string} threadId - Gmail thread ID
+ * @returns {Object|null} Parsed state or null
+ */
+function getThreadProcessingState(threadId) {
+  if (!threadId) return null;
+  const raw = PropertiesService.getScriptProperties().getProperty(
+    buildThreadProcessingStateKey(threadId)
+  );
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    clearThreadProcessingState(threadId);
+    return null;
+  }
+}
+
+/**
+ * Recovers stale Processing states left by interrupted executions.
+ *
+ * This runs before the normal processing loop and only scans a small page
+ * per execution to keep runtime/cost predictable.
+ *
+ * @param {string} userEmail - Effective execution user
+ * @param {number|null} deadlineMs - Unix timestamp (ms) soft deadline
+ * @returns {Object} Recovery stats
+ */
+function recoverStaleProcessingThreads(userEmail, deadlineMs = null) {
+  const processingLabel = getProcessingLabel();
+  const searchCriteria = `label:${CONFIG.processingLabelName} -label:${CONFIG.processedLabelName}`;
+  const pageSize = Math.max(1, CONFIG.staleRecoveryBatchSize || CONFIG.batchSize);
+  const staleThresholdMs =
+    Math.max(1, CONFIG.processingStateTtlMinutes) * 60 * 1000;
+  const now = new Date().getTime();
+
+  let checked = 0;
+  let recovered = 0;
+  let skippedRecent = 0;
+
+  try {
+    const threads = GmailApp.search(searchCriteria, 0, pageSize);
+    if (threads.length === 0) {
+      return { checked, recovered, skippedRecent };
+    }
+
+    for (let i = 0; i < threads.length; i++) {
+      if (deadlineMs && new Date().getTime() >= deadlineMs) {
+        logWithUser(
+          "Soft deadline reached during stale recovery; resuming on next run",
+          "WARNING"
+        );
+        break;
+      }
+
+      const thread = threads[i];
+      const threadId = thread.getId();
+      const state = getThreadProcessingState(threadId);
+      checked++;
+
+      let isStale = false;
+      if (!state || typeof state.timestamp !== "number") {
+        isStale = true;
+      } else if (
+        state.user &&
+        userEmail &&
+        state.user !== userEmail &&
+        now - state.timestamp < staleThresholdMs
+      ) {
+        skippedRecent++;
+        continue;
+      } else if (now - state.timestamp >= staleThresholdMs) {
+        isStale = true;
+      }
+
+      if (!isStale) {
+        skippedRecent++;
+        continue;
+      }
+
+      withRetry(
+        () => thread.removeLabel(processingLabel),
+        "removing stale processing label"
+      );
+      clearThreadProcessingState(threadId);
+      recovered++;
+    }
+
+    if (checked > 0) {
+      logWithUser(
+        `Stale recovery checked ${checked} thread(s): ${recovered} recovered, ${skippedRecent} still recent`,
+        "INFO"
+      );
+    }
+
+    return { checked, recovered, skippedRecent };
+  } catch (error) {
+    logWithUser(`Error recovering stale Processing threads: ${error.message}`, "WARNING");
+    return { checked, recovered, skippedRecent };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Failure state (retry counting + TTL expiry)
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds script-property key for thread failure state.
+ *
+ * @param {string} threadId - Gmail thread ID
+ * @returns {string} Stable key for thread failure state
+ */
+function buildThreadFailureStateKey(threadId) {
+  return `THREAD_FAILURE_${threadId}`;
+}
+
+/**
+ * Reads and validates per-thread failure state.
+ *
+ * @param {string} threadId - Gmail thread ID
+ * @returns {Object|null} Failure state or null
+ */
+function getThreadFailureState(threadId) {
+  if (!threadId) return null;
+
+  const key = buildThreadFailureStateKey(threadId);
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const raw = scriptProperties.getProperty(key);
+  if (!raw) return null;
+
+  try {
+    const state = JSON.parse(raw);
+    const now = new Date().getTime();
+    const ttlMs = Math.max(1, CONFIG.threadFailureStateTtlDays) * 24 * 60 * 60 * 1000;
+    const lastFailureAt = Number(state.lastFailureAt || 0);
+
+    if (lastFailureAt > 0 && now - lastFailureAt > ttlMs) {
+      scriptProperties.deleteProperty(key);
+      return null;
+    }
+
+    return state;
+  } catch (e) {
+    logWithUser(`getThreadFailureState: cleared corrupt state for thread ${threadId}: ${e.message}`, "DEBUG");
+    scriptProperties.deleteProperty(key);
+    return null;
+  }
+}
+
+/**
+ * Clears per-thread failure state.
+ *
+ * @param {string} threadId - Gmail thread ID
+ */
+function clearThreadFailureState(threadId) {
+  if (!threadId) return;
+  PropertiesService.getScriptProperties().deleteProperty(
+    buildThreadFailureStateKey(threadId)
+  );
+}
+
+/**
+ * Classifies a processing failure as transient/permanent/too_large.
+ *
+ * @param {string} message - Error message
+ * @param {string} codeHint - Optional code hint
+ * @returns {{category: string, code: string}} Classification output
+ */
+function classifyProcessingFailure(message, codeHint = "") {
+  const normalized = `${codeHint || ""} ${message || ""}`.toLowerCase();
+
+  if (
+    normalized.includes("too large") ||
+    normalized.includes("exceeds max size") ||
+    normalized.includes("file too big") ||
+    normalized.includes("entity too large") ||
+    normalized.includes("attachment_too_large")
+  ) {
+    return { category: "too_large", code: "too_large" };
+  }
+
+  if (
+    normalized.includes("invalid or inaccessible folder") ||
+    normalized.includes("file not found") ||
+    normalized.includes("cannot find") ||
+    normalized.includes("permission") ||
+    normalized.includes("forbidden") ||
+    normalized.includes("not authorized") ||
+    normalized.includes("insufficient")
+  ) {
+    return { category: "permanent", code: "permission_or_config" };
+  }
+
+  if (
+    normalized.includes("service invoked too many times") ||
+    normalized.includes("rate limit") ||
+    normalized.includes("quota") ||
+    normalized.includes("timed out") ||
+    normalized.includes("internal error") ||
+    normalized.includes("backend error") ||
+    normalized.includes("temporar") ||
+    normalized.includes("try again")
+  ) {
+    return { category: "transient", code: "service_transient" };
+  }
+
+  return { category: "transient", code: "unknown_failure" };
+}
+
+/**
+ * Registers a failure state for a thread with retry classification.
+ *
+ * @param {string} threadId - Gmail thread ID
+ * @param {Object} failure - Failure details
+ * @returns {Object|null} Updated state
+ */
+function registerThreadFailure(threadId, failure = {}) {
+  if (!threadId) return null;
+
+  const previous = getThreadFailureState(threadId) || {};
+  const now = new Date().getTime();
+  const inferred = classifyProcessingFailure(failure.message || "", failure.code || "");
+
+  let category = failure.category || inferred.category;
+  let code = failure.code || inferred.code;
+  const attempts = (Number(previous.attempts) || 0) + 1;
+
+  if (
+    category !== "permanent" &&
+    category !== "too_large" &&
+    attempts >= Math.max(1, CONFIG.maxThreadFailureRetries)
+  ) {
+    category = "permanent";
+    code = "max_retries_exceeded";
+  }
+
+  const state = {
+    attempts: attempts,
+    category: category,
+    code: code,
+    context: failure.context || previous.context || "unspecified",
+    message: String(failure.message || "").substring(0, 1000),
+    attachmentName: failure.attachmentName || null,
+    attachmentSize: Number(failure.attachmentSize || 0) || null,
+    user:
+      failure.userEmail ||
+      previous.user ||
+      Session.getEffectiveUser().getEmail(),
+    firstFailureAt: Number(previous.firstFailureAt) || now,
+    lastFailureAt: now,
+  };
+
+  PropertiesService.getScriptProperties().setProperty(
+    buildThreadFailureStateKey(threadId),
+    JSON.stringify(state)
+  );
+
+  logWithUser(
+    `Thread failure registered: threadId=${threadId}, category=${state.category}, code=${state.code}, attempts=${state.attempts}`,
+    state.category === "permanent" ? "ERROR" : "WARNING"
+  );
+
+  return state;
+}
+
+//=============================================================================
 // ATTACHMENTFILTERS - ATTACHMENT FILTERS
 //=============================================================================
 
@@ -2531,7 +1403,7 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
     if (CONFIG.attachmentTypesWhitelist.includes(mimeType)) {
       logWithUser(
         `Keeping file with important MIME type ${mimeType}: ${fileName}`,
-        "INFO"
+        "DEBUG"
       );
       return false; // Don't skip these types
     }
@@ -2551,7 +1423,7 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
       ) {
         logWithUser(
           `Skipping inline image with Content-Disposition "${contentDisposition}": ${fileName}`,
-          "INFO"
+          "DEBUG"
         );
         return true;
       }
@@ -2575,7 +1447,7 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
         fileName.includes("&disp=") ||
         fileName.includes("&view=")))
   ) {
-    logWithUser(`Skipping embedded email image URL: ${fileName}`, "INFO");
+    logWithUser(`Skipping embedded email image URL: ${fileName}`, "DEBUG");
     return true;
   }
 
@@ -2611,7 +1483,7 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
       fileName.toLowerCase() === name.toLowerCase() ||
       fileName.toLowerCase().includes(name.toLowerCase() + "_")
     ) {
-      logWithUser(`Skipping common embedded element: ${fileName}`, "INFO");
+      logWithUser(`Skipping common embedded element: ${fileName}`, "DEBUG");
       return true;
     }
   }
@@ -2630,7 +1502,7 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
   // Check if the filename matches any of the embedded image patterns
   for (const pattern of embeddedImagePatterns) {
     if (pattern.test(fileName)) {
-      logWithUser(`Skipping embedded image: ${fileName}`, "INFO");
+      logWithUser(`Skipping embedded image: ${fileName}`, "DEBUG");
       return true;
     }
   }
@@ -2658,7 +1530,7 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
 
   // Always keep documents regardless of size
   if (keepExtensions.includes(fileExtension)) {
-    logWithUser(`Keeping document file: ${fileName}`, "INFO");
+    logWithUser(`Keeping document file: ${fileName}`, "DEBUG");
     return false; // Don't skip these types
   }
 
@@ -2669,14 +1541,14 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
       `Skipping potential embedded content without extension: ${fileName} (${Math.round(
         fileSize / 1024
       )}KB)`,
-      "INFO"
+      "DEBUG"
     );
     return true;
   }
 
   // Check if we should skip files by extension (like calendar invitations)
   if (CONFIG.skipFileTypes && CONFIG.skipFileTypes.includes(fileExtension)) {
-    logWithUser(`Skipping file type: ${fileName} (${fileExtension})`, "INFO");
+    logWithUser(`Skipping file type: ${fileName} (${fileExtension})`, "DEBUG");
     return true;
   }
 
@@ -2691,7 +1563,7 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
         `Skipping small image file: ${fileName} (${Math.round(
           fileSize / 1024
         )}KB)`,
-        "INFO"
+        "DEBUG"
       );
       return true;
     }
@@ -2703,121 +1575,6 @@ function shouldSkipFile(fileName, fileSize, attachment = null) {
 //=============================================================================
 // FOLDERMANAGEMENT - FOLDER MANAGEMENT
 //=============================================================================
-
-/**
- * Get or create the special folder for invoices
- *
- * This function creates or retrieves a special folder for storing invoices,
- * with subfolders for each sender's domain. It uses the same locking mechanism as
- * getDomainFolder to prevent race conditions.
- *
- * @param {DriveFolder} mainFolder - The main folder to create the invoices folder in
- * @param {string} domain - The sender's domain to create a subfolder for (optional)
- * @returns {DriveFolder} The invoices folder or domain subfolder
- *
- * The function follows this flow:
- * 1. Gets the folder name from CONFIG.invoicesFolderName
- * 2. Acquires a lock to prevent race conditions during folder creation
- * 3. Checks if the invoices folder already exists
- * 4. If the folder exists, returns it immediately if no domain is specified
- * 5. If domain is specified, gets or creates a subfolder for that domain
- * 6. If any errors occur, falls back to using the main folder
- */
-function getInvoicesFolder(mainFolder, domain = null) {
-  try {
-    const folderName = CONFIG.invoicesFolderName;
-
-    // Use a lock to prevent race conditions when creating folders
-    const lock = LockService.getScriptLock();
-    try {
-      lock.tryLock(10000); // Wait up to 10 seconds for the lock
-
-      // First check if the main invoices folder exists
-      const folders = withRetry(
-        () => mainFolder.getFoldersByName(folderName),
-        "getting invoices folder"
-      );
-
-      let invoicesFolder;
-      if (folders.hasNext()) {
-        invoicesFolder = folders.next();
-        logWithUser(`Using existing invoices folder: ${folderName}`);
-      } else {
-        // Double-check that the folder still doesn't exist
-        // This helps in cases where another execution created it just now
-        const doubleCheckFolders = withRetry(
-          () => mainFolder.getFoldersByName(folderName),
-          "double-checking invoices folder"
-        );
-
-        if (doubleCheckFolders.hasNext()) {
-          invoicesFolder = doubleCheckFolders.next();
-          logWithUser(
-            `Using existing invoices folder (after double-check): ${folderName}`
-          );
-        } else {
-          // If we're still here, we can safely create the folder
-          invoicesFolder = withRetry(
-            () => mainFolder.createFolder(folderName),
-            "creating invoices folder"
-          );
-          logWithUser(`Created new invoices folder: ${folderName}`);
-        }
-      }
-
-      // If no domain is specified, return the main invoices folder
-      if (!domain) {
-        return invoicesFolder;
-      }
-
-      // If domain is specified, get or create a subfolder for that domain
-      const domainFolders = withRetry(
-        () => invoicesFolder.getFoldersByName(domain),
-        `getting domain subfolder in invoices folder: ${domain}`
-      );
-
-      if (domainFolders.hasNext()) {
-        const domainFolder = domainFolders.next();
-        logWithUser(`Using existing domain subfolder in invoices: ${domain}`);
-        return domainFolder;
-      } else {
-        // Double-check for the domain subfolder
-        const doubleCheckDomainFolders = withRetry(
-          () => invoicesFolder.getFoldersByName(domain),
-          `double-checking domain subfolder in invoices: ${domain}`
-        );
-
-        if (doubleCheckDomainFolders.hasNext()) {
-          const domainFolder = doubleCheckDomainFolders.next();
-          logWithUser(
-            `Using existing domain subfolder in invoices (after double-check): ${domain}`
-          );
-          return domainFolder;
-        }
-
-        // Create the domain subfolder
-        const newDomainFolder = withRetry(
-          () => invoicesFolder.createFolder(domain),
-          `creating domain subfolder in invoices: ${domain}`
-        );
-        logWithUser(`Created new domain subfolder in invoices: ${domain}`);
-        return newDomainFolder;
-      }
-    } finally {
-      // Always release the lock
-      if (lock.hasLock()) {
-        lock.releaseLock();
-      }
-    }
-  } catch (error) {
-    logWithUser(
-      `Error getting invoices folder: ${error.message}. Using main folder as fallback.`,
-      "ERROR"
-    );
-    // Ultimate fallback: return the main folder
-    return mainFolder;
-  }
-}
 
 /**
  * Get or create a folder for the sender's domain
@@ -2964,11 +1721,96 @@ function getDomainFolder(sender, mainFolder) {
 //=============================================================================
 
 /**
+ * Builds a stable script-property key for an attachment source ID in a folder.
+ *
+ * @param {string} sourceAttachmentId - Deterministic source attachment ID
+ * @param {string} folderId - Destination folder ID
+ * @returns {string|null} Property key or null if inputs are missing
+ */
+function buildAttachmentSourceIndexKey(sourceAttachmentId, folderId) {
+  if (!sourceAttachmentId || !folderId) return null;
+  const raw = `${sourceAttachmentId}|${folderId}`;
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, raw);
+  const encoded = Utilities.base64EncodeWebSafe(digest).replace(/=+$/, "");
+  return `ATTACHMENT_SOURCE_${encoded}`;
+}
+
+/**
+ * Builds description metadata to persist source linkage.
+ *
+ * @param {Date} emailDate - Original email date
+ * @param {string|null} sourceAttachmentId - Deterministic source attachment ID
+ * @returns {string} Metadata description string
+ */
+function buildAttachmentMetadata(emailDate, sourceAttachmentId) {
+  const parts = [`email_date=${emailDate.toISOString()}`];
+  if (sourceAttachmentId) {
+    parts.push(`source_attachment_id=${sourceAttachmentId}`);
+  }
+  return parts.join("; ");
+}
+
+/**
+ * Returns an indexed file for a sourceAttachmentId/folder if it exists and is valid.
+ *
+ * @param {string|null} sourceAttachmentId - Deterministic source attachment ID
+ * @param {Folder} folder - Destination folder
+ * @returns {DriveFile|null} Existing file from index or null
+ */
+function resolveIndexedAttachment(sourceAttachmentId, folder) {
+  if (!sourceAttachmentId) return null;
+
+  const folderId = folder.getId();
+  const key = buildAttachmentSourceIndexKey(sourceAttachmentId, folderId);
+  if (!key) return null;
+
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const fileId = scriptProperties.getProperty(key);
+  if (!fileId) return null;
+
+  try {
+    const file = DriveApp.getFileById(fileId);
+    const parents = file.getParents();
+    while (parents.hasNext()) {
+      if (parents.next().getId() === folderId) {
+        return file;
+      }
+    }
+
+    // Indexed file is no longer in folder, clear stale index.
+    scriptProperties.deleteProperty(key);
+    return null;
+  } catch (e) {
+    // Indexed file was deleted or inaccessible, clear stale index.
+    logWithUser(`resolveIndexedAttachment: cleared stale index for key ${key}: ${e.message}`, "DEBUG");
+    scriptProperties.deleteProperty(key);
+    return null;
+  }
+}
+
+/**
+ * Registers sourceAttachmentId -> fileId mapping for a folder.
+ *
+ * @param {string|null} sourceAttachmentId - Deterministic source attachment ID
+ * @param {Folder} folder - Destination folder
+ * @param {DriveFile} file - Saved or existing file
+ */
+function registerAttachmentSource(sourceAttachmentId, folder, file) {
+  if (!sourceAttachmentId || !file) return;
+
+  const key = buildAttachmentSourceIndexKey(sourceAttachmentId, folder.getId());
+  if (!key) return;
+
+  PropertiesService.getScriptProperties().setProperty(key, file.getId());
+}
+
+/**
  * Saves an attachment to the appropriate folder based on the sender's domain
  *
  * @param {GmailAttachment} attachment - The email attachment
  * @param {GmailMessage} message - The email message containing the attachment
  * @param {Folder} domainFolder - The Google Drive folder for the domain
+ * @param {Object} options - Optional settings (sourceAttachmentId)
  * @returns {Object} Result object with success status and saved file (if successful)
  *
  * The function follows this flow:
@@ -2984,20 +1826,31 @@ function getDomainFolder(sender, mainFolder) {
  * This function handles duplicate detection and collision avoidance to ensure
  * no attachments are lost when processing emails.
  */
-function saveAttachment(attachment, message, domainFolder) {
+function saveAttachment(attachment, message, domainFolder, options = {}) {
   try {
     const attachmentName = attachment.getName();
     const attachmentSize = Math.round(attachment.getSize() / 1024);
+    const sourceAttachmentId = options.sourceAttachmentId || null;
 
     // Log once at start, but don't repeat filter checks in logs
     logWithUser(
       `Processing attachment: ${attachmentName} (${attachmentSize}KB)`,
-      "INFO"
+      "DEBUG"
     );
 
     // Get the date of the email for logging purposes
     const emailDate = message.getDate();
-    logWithUser(`Email date: ${emailDate.toISOString()}`, "INFO");
+    logWithUser(`Email date: ${emailDate.toISOString()}`, "DEBUG");
+
+    // Fast checkpoint lookup by deterministic source ID + folder
+    const indexedFile = resolveIndexedAttachment(sourceAttachmentId, domainFolder);
+    if (indexedFile) {
+      logWithUser(
+        `Attachment already indexed for source ID, skipping save: ${attachmentName}`,
+        "INFO"
+      );
+      return { success: true, duplicate: true, file: indexedFile };
+    }
 
     // Skip filter logging details here - we've already decided to save this file
 
@@ -3014,6 +1867,7 @@ function saveAttachment(attachment, message, domainFolder) {
           `File already exists with same size: ${attachmentName}`,
           "INFO"
         );
+        registerAttachmentSource(sourceAttachmentId, domainFolder, existingFile);
         return { success: true, duplicate: true, file: existingFile };
       } else {
         // If sizes don't match, rename with timestamp to avoid collision
@@ -3024,7 +1878,10 @@ function saveAttachment(attachment, message, domainFolder) {
         );
 
         // Add date info to the description for reference
-        savedFile.setDescription(`email_date=${emailDate.toISOString()}`);
+        savedFile.setDescription(
+          buildAttachmentMetadata(emailDate, sourceAttachmentId)
+        );
+        registerAttachmentSource(sourceAttachmentId, domainFolder, savedFile);
 
         logWithUser(
           `Successfully saved: ${newName} in ${domainFolder.getName()}`,
@@ -3037,7 +1894,8 @@ function saveAttachment(attachment, message, domainFolder) {
       const savedFile = domainFolder.createFile(attachment);
 
       // Add date info to the description for reference
-      savedFile.setDescription(`email_date=${emailDate.toISOString()}`);
+      savedFile.setDescription(buildAttachmentMetadata(emailDate, sourceAttachmentId));
+      registerAttachmentSource(sourceAttachmentId, domainFolder, savedFile);
 
       logWithUser(
         `Successfully saved: ${attachmentName} in ${domainFolder.getName()}`,
@@ -3062,9 +1920,10 @@ function saveAttachment(attachment, message, domainFolder) {
  * @param {GmailAttachment} attachment - The attachment to save
  * @param {DriveFolder} folder - The folder to save to
  * @param {Date} messageDate - The message date for timestamp
+ * @param {Object} options - Optional settings (sourceAttachmentId)
  * @returns {DriveFile|null} The saved file or null
  */
-function saveAttachmentLegacy(attachment, folder, messageDate) {
+function saveAttachmentLegacy(attachment, folder, messageDate, options = {}) {
   // Create a mock message object with a getDate method
   const mockMessage = {
     getDate: function () {
@@ -3073,7 +1932,7 @@ function saveAttachmentLegacy(attachment, folder, messageDate) {
   };
 
   // Call the new version with the right parameters
-  const result = saveAttachment(attachment, mockMessage, folder);
+  const result = saveAttachment(attachment, mockMessage, folder, options);
 
   // Return the file or null for compatibility
   return result.success ? result.file : null;
@@ -3084,265 +1943,49 @@ function saveAttachmentLegacy(attachment, folder, messageDate) {
 //=============================================================================
 
 /**
- * Determines if a message appears to contain an invoice using AI or keywords
+ * Builds a deterministic source ID for an attachment processing attempt.
  *
- * @param {GmailMessage} message - The Gmail message to analyze
- * @returns {boolean} True if the message likely contains an invoice
+ * @param {string} threadId - Gmail thread ID
+ * @param {string} messageId - Gmail message ID
+ * @param {number} attachmentIndex - Attachment index within filtered message list
+ * @param {GmailAttachment} attachment - Attachment object
+ * @returns {string} Deterministic source ID
  */
-function isInvoiceMessage(message) {
-  // Early return if invoice detection is disabled
-  if (CONFIG.invoiceDetection === false) return false;
-
-  try {
-    // Check if any detection method is enabled
-    if (
-      CONFIG.invoiceDetection === "gemini" ||
-      CONFIG.invoiceDetection === "openai" ||
-      CONFIG.invoiceDetection === "email"
-    ) {
-      // Check if message has attachments and if any are PDFs (with stricter checking)
-      if (CONFIG.onlyAnalyzePDFs) {
-        const attachments = message.getAttachments();
-        let hasPDF = false;
-
-        for (const attachment of attachments) {
-          const fileName = attachment.getName().toLowerCase();
-          const contentType = attachment.getContentType().toLowerCase();
-
-          // Strict PDF check - both extension and MIME type
-          if (CONFIG.strictPdfCheck) {
-            if (fileName.endsWith(".pdf") && contentType.includes("pdf")) {
-              hasPDF = true;
-              break;
-            }
-          } else {
-            // Legacy check - just extension
-            if (fileName.endsWith(".pdf")) {
-              hasPDF = true;
-              break;
-            }
-          }
-        }
-
-        // Skip AI if there are no PDF attachments
-        if (!hasPDF) {
-          logWithUser("No PDF attachments found, skipping AI analysis", "INFO");
-          // Don't fall back to keywords when there are no PDFs if onlyAnalyzePDFs is true
-          // This prevents non-PDF attachments from being classified as invoices based on keywords
-          return false;
-        }
-      }
-
-      // Check if sender domain should be skipped
-      const sender = message.getFrom();
-      const domain = extractDomain(sender);
-      if (CONFIG.skipAIForDomains && CONFIG.skipAIForDomains.includes(domain)) {
-        logWithUser(`Skipping AI for domain ${domain}, using keywords`, "INFO");
-        return checkKeywords(message);
-      }
-
-      // NEW: Check for email-based detection
-      if (CONFIG.invoiceDetection === "email") {
-        const isInvoice = InvoiceDetection.isInvoiceSender(sender);
-        logWithUser(
-          `Email-based invoice detection result: ${isInvoice}`,
-          "INFO"
-        );
-        return isInvoice;
-      }
-
-      // Try Gemini detection first if enabled
-      if (CONFIG.invoiceDetection === "gemini") {
-        try {
-          const isInvoice = GeminiDetection.isInvoiceWithGemini(message);
-          logWithUser(`Gemini invoice detection result: ${isInvoice}`, "INFO");
-          return isInvoice;
-        } catch (geminiError) {
-          logWithUser(
-            `Gemini detection error: ${geminiError.message}, trying fallback options`,
-            "WARNING"
-          );
-
-          // Try OpenAI if enabled as fallback
-          if (CONFIG.invoiceDetection === "openai") {
-            try {
-              const isInvoice = OpenAIDetection.isInvoiceWithOpenAI(message);
-              logWithUser(
-                `OpenAI invoice detection result: ${isInvoice}`,
-                "INFO"
-              );
-              return isInvoice;
-            } catch (openaiError) {
-              logWithUser(
-                `OpenAI detection error: ${openaiError.message}, falling back to keywords`,
-                "WARNING"
-              );
-              return CONFIG.fallbackToKeywords ? checkKeywords(message) : false;
-            }
-          } else if (CONFIG.fallbackToKeywords) {
-            return checkKeywords(message);
-          } else {
-            return false;
-          }
-        }
-      }
-      // Try OpenAI if Gemini is disabled but OpenAI is enabled
-      else if (CONFIG.invoiceDetection === "openai") {
-        try {
-          const isInvoice = OpenAIDetection.isInvoiceWithOpenAI(message);
-          logWithUser(`OpenAI invoice detection result: ${isInvoice}`, "INFO");
-          return isInvoice;
-        } catch (openaiError) {
-          logWithUser(
-            `OpenAI detection error: ${openaiError.message}, falling back to keywords`,
-            "WARNING"
-          );
-          return CONFIG.fallbackToKeywords ? checkKeywords(message) : false;
-        }
-      }
-    }
-
-    // Use keyword detection if no AI is enabled
-    return checkKeywords(message);
-  } catch (error) {
-    logWithUser(`Error in invoice detection: ${error.message}`, "ERROR");
-    return false;
-  }
-}
-
-/**
- * Helper function to check for invoice keywords in message subject and body
- *
- * @param {GmailMessage} message - The Gmail message to check
- * @returns {boolean} True if invoice keywords are found
- */
-function checkKeywords(message) {
-  try {
-    // Check subject for invoice keywords
-    const subject = message.getSubject().toLowerCase();
-    for (const keyword of CONFIG.invoiceKeywords) {
-      if (subject.includes(keyword.toLowerCase())) {
-        logWithUser(
-          `Invoice keyword "${keyword}" found in subject: "${subject}"`,
-          "INFO"
-        );
-        return true;
-      }
-    }
-
-    // Check body for invoice keywords (optional, may affect performance)
-    try {
-      const body = message.getPlainBody().toLowerCase();
-      for (const keyword of CONFIG.invoiceKeywords) {
-        if (body.includes(keyword.toLowerCase())) {
-          logWithUser(
-            `Invoice keyword "${keyword}" found in message body`,
-            "INFO"
-          );
-          return true;
-        }
-      }
-    } catch (e) {
-      // If we can't get the body, just log and continue
-      logWithUser(`Could not check message body: ${e.message}`, "WARNING");
-    }
-
-    return false;
-  } catch (error) {
-    logWithUser(
-      `Error checking for invoice keywords: ${error.message}`,
-      "ERROR"
-    );
-    return false;
-  }
-}
-
-/**
- * Determines if an attachment appears to be an invoice based on file extension and content type
- *
- * @param {GmailAttachment} attachment - The attachment to analyze
- * @returns {boolean} True if the attachment likely is an invoice
- */
-function isInvoiceAttachment(attachment) {
-  if (CONFIG.invoiceDetection === false) return false;
-
-  try {
-    const fileName = attachment.getName().toLowerCase();
-    const contentType = attachment.getContentType().toLowerCase();
-
-    // Check file extension against invoice file types with stricter checking
-    for (const ext of CONFIG.invoiceFileTypes) {
-      const lowerExt = ext.toLowerCase();
-
-      // Strict PDF check - both extension and MIME type
-      if (CONFIG.strictPdfCheck) {
-        if (
-          lowerExt === ".pdf" &&
-          fileName.endsWith(lowerExt) &&
-          contentType.includes("pdf")
-        ) {
-          return true;
-        }
-      } else {
-        // Legacy check - just extension
-        if (fileName.endsWith(lowerExt)) {
-          return true;
-        }
-      }
-    }
-
-    return false;
-  } catch (error) {
-    logWithUser(
-      `Error checking if attachment is invoice: ${error.message}`,
-      "ERROR"
-    );
-    return false;
-  }
-}
-
-/**
- * Gets or creates the processed label
- *
- * @returns {GmailLabel} The Gmail label used to mark processed threads
- */
-function getProcessedLabel() {
-  let processedLabel = GmailApp.getUserLabelByName(CONFIG.processedLabelName);
-
-  if (!processedLabel) {
-    processedLabel = GmailApp.createLabel(CONFIG.processedLabelName);
-    logWithUser(`Created new Gmail label: ${CONFIG.processedLabelName}`);
-  } else {
-    logWithUser(`Using existing Gmail label: ${CONFIG.processedLabelName}`);
-  }
-
-  return processedLabel;
+function buildSourceAttachmentId(
+  threadId,
+  messageId,
+  attachmentIndex,
+  attachment
+) {
+  const name = attachment.getName();
+  const size = attachment.getSize();
+  return `${threadId}:${messageId}:${attachmentIndex}:${name}:${size}`;
 }
 
 /**
  * Processes emails for a specific user with optimized batch handling
  *
- * This function processes emails in batches until it finds enough threads
- * with valid attachments or exhausts all unprocessed threads.
+ * This function processes a single paginated page of unprocessed threads
+ * per execution to keep runtime predictable and reduce resource usage.
  *
  * @param {string} userEmail - Email of the user to process
  * @param {boolean} oldestFirst - Whether to process oldest emails first (default: true)
+ * @param {number|null} deadlineMs - Unix timestamp (ms) to stop safely before hard timeout
  * @returns {boolean} True if processing was successful, false if an error occurred
  *
  * The function follows this flow:
  * 1. Accesses the main Google Drive folder specified in CONFIG
  * 2. Gets or creates the Gmail label used to mark processed threads
  * 3. Builds search criteria to find unprocessed threads with attachments
- * 4. Tests different search variations to find the most effective query
- * 5. Retrieves and optionally sorts threads by date (oldest first if specified)
- * 6. Processes threads in batches, with batch size determined by CONFIG.batchSize
- * 7. Tracks progress and adjusts batch size dynamically to meet target counts
- * 8. Returns success/failure status and logs detailed processing statistics
+ * 4. Retrieves one paginated page of matching threads using CONFIG.batchSize
+ * 5. Optionally sorts threads in that page by date (oldest first)
+ * 6. Processes that single page and applies processed labels as needed
+ * 7. Returns success/failure status and logs processing statistics
  *
- * This batch processing approach helps avoid hitting the 6-minute execution limit
- * of Google Apps Script by processing a controlled number of threads per execution.
+ * This paginated approach helps avoid hitting the 6-minute execution limit
+ * by processing a controlled number of threads per execution.
  */
-function processUserEmails(userEmail, oldestFirst = true) {
+function processUserEmails(userEmail, oldestFirst = true, deadlineMs = null) {
   try {
     logWithUser(`Processing emails for user: ${userEmail}`, "INFO");
 
@@ -3357,49 +2000,28 @@ function processUserEmails(userEmail, oldestFirst = true) {
       );
     }
 
-    // Get or create the 'Processed' label
+    // Get or create processing state labels
     let processedLabel = getProcessedLabel();
+    let processingLabel = getProcessingLabel();
+    let errorLabel = getErrorLabel();
+    let permanentErrorLabel = getPermanentErrorLabel();
+    let tooLargeLabel = getTooLargeLabel();
 
     // Build search criteria using the processedLabelName from config
-    let searchCriteria = `has:attachment -label:${CONFIG.processedLabelName}`;
+    const searchCriteria =
+      `has:attachment -label:${CONFIG.processedLabelName}` +
+      ` -label:${CONFIG.permanentErrorLabelName}` +
+      ` -label:${CONFIG.tooLargeLabelName}`;
+    const pageSize = Math.max(1, CONFIG.batchSize);
 
-    // Debug: Try several search variations to see if any of them work better
-    const searchVariations = [
-      { name: "Standard", query: searchCriteria },
-      { name: "In Inbox", query: `in:inbox ${searchCriteria}` },
-      {
-        name: "With quote",
-        query: `has:attachment -label:"${CONFIG.processedLabelName}"`,
-      },
-      {
-        name: "With parentheses",
-        query: `has:attachment AND -(label:${CONFIG.processedLabelName})`,
-      },
-      {
-        name: "Explicit attachment",
-        query: `filename:* -label:${CONFIG.processedLabelName}`,
-      },
-    ];
-
-    // Try each search variation and log results
-    logWithUser("Testing different search variations:", "INFO");
-    for (const variation of searchVariations) {
-      const count = GmailApp.search(variation.query).length;
-      logWithUser(
-        `- ${variation.name}: "${variation.query}" found ${count} threads`,
-        "INFO"
-      );
-    }
-
-    // Debug: Check how many threads match the base search criteria
-    const totalMatchingThreads = GmailApp.search(searchCriteria).length;
+    // Single pagination cycle per execution to keep runtime predictable
+    const threads = GmailApp.search(searchCriteria, 0, pageSize);
     logWithUser(
-      `Total unprocessed threads with attachments found: ${totalMatchingThreads}`,
+      `Retrieved ${threads.length} threads from paginated search (offset=0, limit=${pageSize})`,
       "INFO"
     );
 
-    // Continue only if we actually have matching threads
-    if (totalMatchingThreads === 0) {
+    if (threads.length === 0) {
       logWithUser(
         "No unprocessed threads with attachments found, skipping processing",
         "INFO"
@@ -3407,114 +2029,56 @@ function processUserEmails(userEmail, oldestFirst = true) {
       return true;
     }
 
-    // NOTE: We no longer add 'older_first' to the search criteria since it doesn't work as expected
-    // Instead, we'll sort the threads ourselves after retrieving them
-    if (oldestFirst) {
-      logWithUser(
-        "Will manually sort threads by date (oldest first) after retrieving them",
-        "INFO"
-      );
-    } else {
-      logWithUser("Using default order (newest first)", "INFO");
-    }
-
-    // Initialize batch processing
-    let threadsProcessed = 0;
-    let threadsWithValidAttachments = 0;
-    let batchSize = CONFIG.batchSize;
-    let offset = 0;
-
-    // Get all threads that match our search criteria
-    let allThreads = GmailApp.search(searchCriteria);
-    logWithUser(
-      `Retrieved ${allThreads.length} total threads matching search criteria`,
-      "INFO"
-    );
-
-    // If we want oldest first, manually sort the threads by date
-    if (oldestFirst && allThreads.length > 0) {
+    // Preserve oldest-first preference within the current page.
+    if (oldestFirst && threads.length > 1) {
       try {
-        // Sort threads by date (oldest first)
-        allThreads.sort(function (a, b) {
+        threads.sort(function (a, b) {
           const dateA = a.getLastMessageDate();
           const dateB = b.getLastMessageDate();
-          return dateA - dateB; // Ascending order (oldest first)
+          return dateA - dateB;
         });
-        logWithUser(
-          "Successfully sorted threads by date (oldest first)",
-          "INFO"
-        );
+        logWithUser("Sorted paginated threads by date (oldest first)", "INFO");
       } catch (e) {
         logWithUser(
-          `Error sorting threads: ${e.message}. Will use default order.`,
+          `Error sorting paginated threads: ${e.message}. Using default order.`,
           "WARNING"
         );
       }
     }
 
-    // Continue processing batches until we reach the desired number of threads with valid attachments
-    // or until we run out of unprocessed threads
-    while (
-      threadsWithValidAttachments < CONFIG.batchSize &&
-      offset < allThreads.length
-    ) {
-      // Get the next batch of threads from our already retrieved and sorted list
-      const currentBatchSize = Math.min(batchSize, allThreads.length - offset);
-      const threads = allThreads.slice(offset, offset + currentBatchSize);
-
-      // If no more threads, break out of the loop
-      if (threads.length === 0) {
-        logWithUser(
-          "No more unprocessed threads with attachments found in this batch",
-          "INFO"
-        );
-        break;
-      }
-
-      logWithUser(
-        `Processing batch of ${threads.length} threads (batch ${
-          Math.floor(offset / batchSize) + 1
-        })`,
-        "INFO"
-      );
-
-      // Debug: Log subject of first thread for troubleshooting
-      if (threads.length > 0) {
-        logWithUser(
-          `First thread subject: "${threads[0].getFirstMessageSubject()}" from ${threads[0]
-            .getLastMessageDate()
-            .toISOString()}`,
-          "INFO"
-        );
-      }
-
-      // Process each thread and count those with valid attachments
-      const result = processThreadsWithCounting(
-        threads,
-        mainFolder,
-        processedLabel
-      );
-      threadsProcessed += threads.length;
-      threadsWithValidAttachments += result.threadsWithAttachments;
-
-      logWithUser(
-        `Batch processed ${threads.length} threads, ${result.threadsWithAttachments} had valid attachments`,
-        "INFO"
-      );
-
-      // Update the offset for the next batch
-      offset += threads.length;
-
-      // If we're getting close to our target, reduce the next batch size to avoid processing too many
-      if (threadsWithValidAttachments + batchSize > CONFIG.batchSize * 1.5) {
-        batchSize = Math.max(5, CONFIG.batchSize - threadsWithValidAttachments);
-      }
-    }
-
+    // Debug: Log subject of first thread for troubleshooting
     logWithUser(
-      `Completed processing ${threadsProcessed} threads, ${threadsWithValidAttachments} with valid attachments for user: ${userEmail}`,
+      `First paginated thread subject: "${threads[0].getFirstMessageSubject()}" from ${threads[0]
+        .getLastMessageDate()
+        .toISOString()}`,
       "INFO"
     );
+
+    // Process exactly one page per execution
+    const result = processThreadsWithCounting(
+      threads,
+      mainFolder,
+      processedLabel,
+      processingLabel,
+      errorLabel,
+      permanentErrorLabel,
+      tooLargeLabel,
+      deadlineMs,
+      userEmail
+    );
+    const threadsProcessed = result.processedThreads;
+    const threadsWithValidAttachments = result.threadsWithAttachments;
+
+    logWithUser(
+      `Completed paginated processing: ${threadsProcessed} threads, ${threadsWithValidAttachments} with valid attachments for user: ${userEmail}`,
+      "INFO"
+    );
+    if (result.stoppedByDeadline) {
+      logWithUser(
+        `Stopped early due to execution soft limit; remaining threads will continue in next run`,
+        "WARNING"
+      );
+    }
     return true;
   } catch (error) {
     logWithUser(
@@ -3535,7 +2099,12 @@ function processUserEmails(userEmail, oldestFirst = true) {
  * @param {GmailThread[]} threads - Gmail threads to process
  * @param {DriveFolder} mainFolder - The main folder to save attachments to
  * @param {GmailLabel} processedLabel - The label to apply to processed threads
- * @returns {Object} Object containing count of threads with valid attachments
+ * @param {GmailLabel} processingLabel - The label to apply while processing
+ * @param {GmailLabel} errorLabel - The label to apply on processing failure
+ * @param {GmailLabel} permanentErrorLabel - The label for non-retriable failures
+ * @param {GmailLabel} tooLargeLabel - The label for too-large attachments
+ * @param {number|null} deadlineMs - Unix timestamp (ms) to stop safely before hard timeout
+ * @returns {Object} Object containing count of threads with valid attachments and processing status
  *
  * The function follows this flow:
  * 1. Iterates through each thread in the provided array
@@ -3545,17 +2114,42 @@ function processUserEmails(userEmail, oldestFirst = true) {
  *    - Filters attachments based on sender domain and attachment properties
  *    - Creates domain folders as needed and saves valid attachments
  *    - Verifies file timestamps match email dates
- * 4. Marks threads as processed if they had attachments (even if all were filtered out)
- * 5. Counts and returns the number of threads that had valid attachments saved
+ * 4. Marks threads as processed only when safe (or when all attachments were filtered out)
+ * 5. Counts and returns processing statistics for the page
  *
  * This function is optimized for batch processing to handle the 6-minute execution limit
  * of Google Apps Script by focusing on counting threads with valid attachments.
  */
-function processThreadsWithCounting(threads, mainFolder, processedLabel) {
+function processThreadsWithCounting(
+  threads,
+  mainFolder,
+  processedLabel,
+  processingLabel,
+  errorLabel,
+  permanentErrorLabel,
+  tooLargeLabel,
+  deadlineMs = null,
+  userEmail = null
+) {
   let threadsWithAttachments = 0;
+  let processedThreads = 0;
+  let stoppedByDeadline = false;
+  const resolvedUserEmail =
+    userEmail || Session.getEffectiveUser().getEmail();
 
   for (let i = 0; i < threads.length; i++) {
+    if (deadlineMs && new Date().getTime() >= deadlineMs) {
+      stoppedByDeadline = true;
+      logWithUser(
+        "Execution soft limit reached; stopping thread loop for safe resume",
+        "WARNING"
+      );
+      break;
+    }
+
     const thread = threads[i];
+    let threadId = null;
+    let processingLabelApplied = false;
     try {
       // Check if the thread is already processed
       const threadLabels = thread.getLabels();
@@ -3564,16 +2158,52 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
       );
 
       if (!isAlreadyProcessed) {
+        threadId = thread.getId();
+        const previousFailure = getThreadFailureState(threadId);
+        if (previousFailure && previousFailure.category === "permanent") {
+          withRetry(
+            () => thread.addLabel(permanentErrorLabel),
+            "adding permanent error label from stored state"
+          );
+          logWithUser(
+            `Skipping thread with permanent failure state: ${threadId} (${previousFailure.code})`,
+            "WARNING"
+          );
+          processedThreads++;
+          continue;
+        }
+
         const messages = thread.getMessages();
         let threadProcessed = false;
         let threadHasAttachments = false;
+        let threadHadValidAttachments = false;
+        let threadHadSaveFailures = false;
+        let threadHasTooLargeAttachments = false;
+        let threadMarkedPermanentFailure = false;
         const threadSubject = thread.getFirstMessageSubject();
         logWithUser(`Processing thread: ${threadSubject}`);
+        withRetry(
+          () => thread.addLabel(processingLabel),
+          "adding processing label"
+        );
+        processingLabelApplied = true;
+        try {
+          markThreadProcessingState(
+            threadId,
+            Session.getEffectiveUser().getEmail()
+          );
+        } catch (processingStateError) {
+          logWithUser(
+            `Failed to store processing checkpoint: ${processingStateError.message}`,
+            "WARNING"
+          );
+        }
 
         // Process each message in the thread
         for (let j = 0; j < messages.length; j++) {
           const message = messages[j];
           const attachments = message.getAttachments();
+          const messageId = message.getId();
           const sender = message.getFrom();
           // Get the message date to use for file creation date
           const messageDate = message.getDate();
@@ -3590,7 +2220,8 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
             threadHasAttachments = true;
 
             logWithUser(
-              `Found ${attachments.length} attachments in message from ${sender}`
+              `Found ${attachments.length} attachments in message from ${sender}${extractDomain(sender) === extractDomain(resolvedUserEmail) ? " (sent by me)" : ""}`,
+              "DEBUG"
             );
 
             // Log MIME types to help diagnose what types of attachments are found
@@ -3600,7 +2231,7 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
                   `Attachment: ${att.getName()}, Type: ${att.getContentType()}, Size: ${Math.round(
                     att.getSize() / 1024
                   )}KB`,
-                  "INFO"
+                  "DEBUG"
                 );
               } catch (e) {
                 // Skip if we can't get content type
@@ -3614,12 +2245,26 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
               const fileName = attachment.getName();
               const fileSize = attachment.getSize();
 
-              // Skip if it matches our filter criteria - passing full attachment object
-              if (
-                shouldSkipFile(fileName, fileSize, attachment) ||
-                fileSize > CONFIG.maxFileSize
-              ) {
-                logWithUser(`Skipping attachment: ${fileName}`, "INFO");
+              if (fileSize > CONFIG.maxFileSize) {
+                threadHasTooLargeAttachments = true;
+                registerThreadFailure(threadId, {
+                  category: "too_large",
+                  code: "too_large",
+                  context: "attachment_filter",
+                  message: `Attachment exceeds max size (${fileSize} bytes > ${CONFIG.maxFileSize})`,
+                  attachmentName: fileName,
+                  attachmentSize: fileSize,
+                });
+                logWithUser(
+                  `Attachment too large, skipping and labeling thread: ${fileName}`,
+                  "WARNING"
+                );
+                continue;
+              }
+
+              // Skip if it matches filter criteria
+              if (shouldSkipFile(fileName, fileSize, attachment)) {
+                logWithUser(`Skipping attachment: ${fileName}`, "DEBUG");
                 continue;
               }
 
@@ -3628,124 +2273,121 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
 
             // Only create domain folder if we have valid attachments to save
             if (validAttachments.length > 0) {
-              const domainFolder = getDomainFolder(sender, mainFolder);
+              // For sent messages: route to each external recipient domain.
+              // For received messages: route to the sender's domain (existing behavior).
+              const isSentByMe =
+                extractDomain(sender) === extractDomain(resolvedUserEmail);
+              const targetDomains = isSentByMe
+                ? extractExternalRecipientDomains(
+                    message,
+                    extractDomain(resolvedUserEmail)
+                  // getDomainFolder calls extractDomain() internally, which requires an "@" to
+                  // parse a domain. Prefix bare domain strings (e.g. "acme.com" → "@acme.com")
+                  // since extractExternalRecipientDomains returns plain domain strings.
+                  ).map((d) => "@" + d)
+                : [sender];
 
-              // Check if this message might contain invoices
-              const isInvoice = isInvoiceMessage(message);
-              let invoicesFolder = null;
-
-              // If invoice detection is enabled and this might be an invoice,
-              // get the invoices folder with domain subfolder
-              if (CONFIG.invoiceDetection !== false && isInvoice) {
-                logWithUser(`Message appears to contain invoice(s)`, "INFO");
-                const senderDomain = extractDomain(sender);
-                invoicesFolder = getInvoicesFolder(mainFolder, senderDomain);
-              }
-
-              // Process each valid attachment
-              for (let k = 0; k < validAttachments.length; k++) {
-                const attachment = validAttachments[k];
+              if (targetDomains.length === 0) {
                 logWithUser(
-                  `Processing attachment: ${attachment.getName()} (${Math.round(
-                    attachment.getSize() / 1024
-                  )}KB)`
-                );
-                // Log the message date that will be used for the file timestamp
-                logWithUser(
-                  `Email date for timestamp: ${messageDate.toISOString()}`,
+                  `Skipping sent message with no external recipients: ${threadSubject}`,
                   "INFO"
                 );
+                continue;
+              }
 
-                // Use the legacy wrapper for backward compatibility
-                const savedFile = saveAttachmentLegacy(
-                  attachment,
-                  domainFolder,
-                  messageDate
-                );
+              threadHadValidAttachments = true;
 
-                // Process the result object
-                if (savedFile) {
-                  // If the file was saved, verify its timestamp was set correctly
-                  try {
-                    // Get the file's timestamp using DriveApp
-                    const updatedDate = savedFile.getLastUpdated();
-                    logWithUser(
-                      `Saved file modification date: ${updatedDate.toISOString()}`,
-                      "INFO"
-                    );
+              for (const domainTarget of targetDomains) {
+                const domainFolder = getDomainFolder(domainTarget, mainFolder);
 
-                    // Compare with the message date
-                    const messageDateTime = messageDate.getTime();
-                    const fileDateTime = updatedDate.getTime();
-                    const diffInMinutes =
-                      Math.abs(messageDateTime - fileDateTime) / (1000 * 60);
+                // Process each valid attachment
+                for (let k = 0; k < validAttachments.length; k++) {
+                  const attachment = validAttachments[k];
+                  const sourceAttachmentId = buildSourceAttachmentId(
+                    threadId,
+                    messageId,
+                    k,
+                    attachment
+                  );
+                  logWithUser(
+                    `Processing attachment: ${attachment.getName()} (${Math.round(
+                      attachment.getSize() / 1024
+                    )}KB)`,
+                    "DEBUG"
+                  );
+                  // Log the message date that will be used for the file timestamp
+                  logWithUser(
+                    `Email date for timestamp: ${messageDate.toISOString()}`,
+                    "DEBUG"
+                  );
 
-                    if (diffInMinutes < 5) {
+                  // The same sourceAttachmentId is used across all domain targets for this attachment.
+                  // Deduplication safety is maintained because buildAttachmentSourceIndexKey hashes
+                  // sourceAttachmentId|folderId — the folderId differs per domain folder, so each
+                  // domain copy gets a unique dedup key.
+                  const saveResult = saveAttachment(attachment, message, domainFolder, {
+                    sourceAttachmentId: `${sourceAttachmentId}:domain`,
+                  });
+
+                  // Process the result object
+                  if (saveResult.success) {
+                    const savedFile = saveResult.file;
+                    threadProcessed = true;
+                    // If the file was saved, verify its timestamp was set correctly
+                    try {
+                      // Get the file's timestamp using DriveApp
+                      const updatedDate = savedFile.getLastUpdated();
                       logWithUser(
-                        "✅ File timestamp matches email date (within 5 minutes)",
-                        "INFO"
+                        `Saved file modification date: ${updatedDate.toISOString()}`,
+                        "DEBUG"
                       );
-                    } else {
+
+                      // Compare with the message date
+                      const messageDateTime = messageDate.getTime();
+                      const fileDateTime = updatedDate.getTime();
+                      const diffInMinutes =
+                        Math.abs(messageDateTime - fileDateTime) / (1000 * 60);
+
+                      if (diffInMinutes < 5) {
+                        logWithUser(
+                          "✅ File timestamp matches email date (within 5 minutes)",
+                          "INFO"
+                        );
+                      } else {
+                        logWithUser(
+                          `⚠️ File timestamp differs from email date by ${Math.round(
+                            diffInMinutes
+                          )} minutes`,
+                          "WARNING"
+                        );
+                      }
+                    } catch (e) {
+                      // Just log the error but don't stop processing
                       logWithUser(
-                        `⚠️ File timestamp differs from email date by ${Math.round(
-                          diffInMinutes
-                        )} minutes`,
+                        `Error verifying file timestamp: ${e.message}`,
                         "WARNING"
                       );
                     }
-
-                    // If this is an invoice or the attachment looks like an invoice,
-                    // also save it to the invoices folder
-                    if (invoicesFolder || isInvoiceAttachment(attachment)) {
-                      if (!invoicesFolder) {
-                        logWithUser(
-                          `Attachment appears to be an invoice based on file type`,
-                          "INFO"
-                        );
-                        const senderDomain = extractDomain(sender);
-                        invoicesFolder = getInvoicesFolder(
-                          mainFolder,
-                          senderDomain
-                        );
-                      }
-
-                      // Save a copy to the invoices folder
-                      try {
-                        logWithUser(
-                          `Saving copy to invoices folder: ${CONFIG.invoicesFolderName}`,
-                          "INFO"
-                        );
-                        const invoiceFile = saveAttachmentLegacy(
-                          attachment,
-                          invoicesFolder,
-                          messageDate
-                        );
-
-                        if (invoiceFile) {
-                          logWithUser(
-                            `Successfully saved invoice copy: ${attachment.getName()}`,
-                            "INFO"
-                          );
-                        }
-                      } catch (invoiceError) {
-                        logWithUser(
-                          `Error saving to invoices folder: ${invoiceError.message}`,
-                          "ERROR"
-                        );
-                        // Continue processing even if saving to invoices folder fails
-                      }
+                  } else {
+                    threadHadSaveFailures = true;
+                    const failureState = registerThreadFailure(threadId, {
+                      context: "save_attachment",
+                      message:
+                        saveResult.error ||
+                        `Failed to save attachment ${attachment.getName()}`,
+                      attachmentName: attachment.getName(),
+                      attachmentSize: attachment.getSize(),
+                    });
+                    if (failureState && failureState.category === "permanent") {
+                      threadMarkedPermanentFailure = true;
                     }
-                  } catch (e) {
-                    // Just log the error but don't stop processing
                     logWithUser(
-                      `Error verifying file timestamp: ${e.message}`,
+                      `Failed to save valid attachment: ${attachment.getName()}`,
                       "WARNING"
                     );
                   }
-                }
-
-                threadProcessed = true;
-              }
+                } // end for (let k ...)
+              } // end for (const domainTarget of targetDomains)
             } else {
               logWithUser(
                 `No valid attachments to save in message from ${sender}`,
@@ -3755,25 +2397,89 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
           }
         }
 
-        // Mark as processed:
-        // 1. If we processed valid attachments OR
-        // 2. If the thread had attachments but they were all filtered out
-        if (threadProcessed || threadHasAttachments) {
+        // Mark as processed only for clean outcomes:
+        // 1. Valid attachments saved without save failures or too-large items
+        // 2. Thread had attachments but none were valid, and no too-large items
+        if (threadProcessed && !threadHadSaveFailures && !threadHasTooLargeAttachments) {
           withRetry(
             () => thread.addLabel(processedLabel),
             "adding processed label"
           );
-
-          if (threadProcessed) {
-            logWithUser(
-              `Thread "${threadSubject}" processed with valid attachments and labeled`
-            );
-            threadsWithAttachments++;
-          } else {
-            logWithUser(
-              `Thread "${threadSubject}" had attachments that were filtered out, marked as processed`
+          withRetry(
+            () => thread.removeLabel(errorLabel),
+            "removing error label after successful processing"
+          );
+          withRetry(
+            () => thread.removeLabel(permanentErrorLabel),
+            "removing permanent error label after successful processing"
+          );
+          withRetry(
+            () => thread.removeLabel(tooLargeLabel),
+            "removing too-large label after successful processing"
+          );
+          clearThreadFailureState(threadId);
+          logWithUser(
+            `Thread "${threadSubject}" processed with valid attachments and labeled`
+          );
+          threadsWithAttachments++;
+        } else if (
+          threadHasAttachments &&
+          !threadHadValidAttachments &&
+          !threadHasTooLargeAttachments
+        ) {
+          withRetry(
+            () => thread.addLabel(processedLabel),
+            "adding processed label"
+          );
+          withRetry(
+            () => thread.removeLabel(errorLabel),
+            "removing error label after filtered processing"
+          );
+          withRetry(
+            () => thread.removeLabel(permanentErrorLabel),
+            "removing permanent error label after filtered processing"
+          );
+          withRetry(
+            () => thread.removeLabel(tooLargeLabel),
+            "removing too-large label after filtered processing"
+          );
+          clearThreadFailureState(threadId);
+          logWithUser(
+            `Thread "${threadSubject}" had attachments but none were valid; marked as processed`,
+            "INFO"
+          );
+        } else if (threadHadValidAttachments && threadHadSaveFailures) {
+          withRetry(() => thread.addLabel(errorLabel), "adding error label");
+          if (threadMarkedPermanentFailure) {
+            withRetry(
+              () => thread.addLabel(permanentErrorLabel),
+              "adding permanent error label"
             );
           }
+          if (threadHasTooLargeAttachments) {
+            withRetry(
+              () => thread.addLabel(tooLargeLabel),
+              "adding too-large label alongside save failures"
+            );
+          }
+          logWithUser(
+            `Thread "${threadSubject}" had valid attachments with save failures; not marking as processed for retry`,
+            "WARNING"
+          );
+        } else if (threadHasTooLargeAttachments) {
+          withRetry(() => thread.addLabel(tooLargeLabel), "adding too-large label");
+          withRetry(
+            () => thread.removeLabel(errorLabel),
+            "removing error label for too-large-only thread"
+          );
+          withRetry(
+            () => thread.removeLabel(permanentErrorLabel),
+            "removing permanent error label for too-large-only thread"
+          );
+          logWithUser(
+            `Thread "${threadSubject}" contains attachments above max size; marked as TooLarge`,
+            "WARNING"
+          );
         } else {
           logWithUser(
             `No attachments found in thread "${threadSubject}"`,
@@ -3782,17 +2488,65 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
         }
       }
     } catch (error) {
+      const failedThreadId = threadId || thread.getId();
+      const failureState = registerThreadFailure(failedThreadId, {
+        context: "thread_exception",
+        message: error.message,
+      });
       logWithUser(
         `Error processing thread "${thread.getFirstMessageSubject()}": ${
           error.message
         }`,
         "ERROR"
       );
+      try {
+        withRetry(
+          () => thread.addLabel(errorLabel),
+          "adding error label after thread exception"
+        );
+        if (failureState && failureState.category === "permanent") {
+          withRetry(
+            () => thread.addLabel(permanentErrorLabel),
+            "adding permanent error label after thread exception"
+          );
+        }
+      } catch (errorLabelError) {
+        logWithUser(
+          `Failed to add error label: ${errorLabelError.message}`,
+          "WARNING"
+        );
+      }
       // Continue with next thread instead of stopping execution
+    } finally {
+      if (processingLabelApplied) {
+        try {
+          withRetry(
+            () => thread.removeLabel(processingLabel),
+            "removing processing label"
+          );
+        } catch (processingCleanupError) {
+          logWithUser(
+            `Failed to remove processing label: ${processingCleanupError.message}`,
+            "WARNING"
+          );
+        }
+      }
+      if (threadId) {
+        try {
+          clearThreadProcessingState(threadId);
+        } catch (processingStateCleanupError) {
+          logWithUser(
+            `Failed to clear processing state: ${processingStateCleanupError.message}`,
+            "WARNING"
+          );
+        }
+      }
     }
+
+    processedThreads++;
   }
 
-  return { threadsWithAttachments };
+  return { threadsWithAttachments, processedThreads, stoppedByDeadline };
 }
 
 /**
@@ -3820,6 +2574,7 @@ function processThreadsWithCounting(threads, mainFolder, processedLabel) {
 function processMessages(thread, processedLabel, mainFolder) {
   try {
     const messages = thread.getMessages();
+    const threadId = thread.getId();
     let result = {
       totalAttachments: 0,
       savedAttachments: 0,
@@ -3831,6 +2586,7 @@ function processMessages(thread, processedLabel, mainFolder) {
 
     for (const message of messages) {
       try {
+        const messageId = message.getId();
         const attachments = message.getAttachments();
         const validAttachments = attachments.filter(
           (att) => !shouldSkipFile(att.getName(), att.getSize(), att)
@@ -3856,23 +2612,22 @@ function processMessages(thread, processedLabel, mainFolder) {
           continue;
         }
 
-        // Check if this message might contain invoices
-        const isInvoice = isInvoiceMessage(message);
-        let invoicesFolder = null;
-
-        // If invoice detection is enabled and this might be an invoice,
-        // get the invoices folder with domain subfolder
-        if (CONFIG.invoiceDetection !== false && isInvoice) {
-          logWithUser(`Message appears to contain invoice(s)`, "INFO");
-          invoicesFolder = getInvoicesFolder(mainFolder, domain);
-        }
-
         result.totalAttachments += validAttachments.length;
 
         // Process each valid attachment
-        for (const attachment of validAttachments) {
+        for (let attachmentIndex = 0; attachmentIndex < validAttachments.length; attachmentIndex++) {
+          const attachment = validAttachments[attachmentIndex];
+          const sourceAttachmentId = buildSourceAttachmentId(
+            threadId,
+            messageId,
+            attachmentIndex,
+            attachment
+          );
+
           // Save to domain folder
-          const saveResult = saveAttachment(attachment, message, domainFolder);
+          const saveResult = saveAttachment(attachment, message, domainFolder, {
+            sourceAttachmentId: `${sourceAttachmentId}:domain`,
+          });
 
           if (saveResult.success) {
             if (saveResult.duplicate) {
@@ -3880,44 +2635,6 @@ function processMessages(thread, processedLabel, mainFolder) {
             } else {
               result.savedAttachments++;
               result.savedSize += attachment.getSize();
-
-              // If this is an invoice or the attachment looks like an invoice,
-              // also save it to the invoices folder
-              if (invoicesFolder || isInvoiceAttachment(attachment)) {
-                if (!invoicesFolder) {
-                  logWithUser(
-                    `Attachment appears to be an invoice based on file type`,
-                    "INFO"
-                  );
-                  invoicesFolder = getInvoicesFolder(mainFolder, domain);
-                }
-
-                // Save a copy to the invoices folder
-                try {
-                  logWithUser(
-                    `Saving copy to invoices folder: ${CONFIG.invoicesFolderName}`,
-                    "INFO"
-                  );
-                  const invoiceResult = saveAttachment(
-                    attachment,
-                    message,
-                    invoicesFolder
-                  );
-
-                  if (invoiceResult.success && !invoiceResult.duplicate) {
-                    logWithUser(
-                      `Successfully saved invoice copy: ${attachment.getName()}`,
-                      "INFO"
-                    );
-                  }
-                } catch (invoiceError) {
-                  logWithUser(
-                    `Error saving to invoices folder: ${invoiceError.message}`,
-                    "ERROR"
-                  );
-                  // Continue processing even if saving to invoices folder fails
-                }
-              }
             }
           } else {
             result.skippedAttachments++;
@@ -3933,8 +2650,17 @@ function processMessages(thread, processedLabel, mainFolder) {
       }
     }
 
-    // Apply the processed label to the thread
-    thread.addLabel(processedLabel);
+    // Apply the processed label only when safe:
+    // - no errors during valid-attachment saving, or
+    // - there were no valid attachments to save
+    if (result.errors === 0 || result.totalAttachments === 0) {
+      thread.addLabel(processedLabel);
+    } else {
+      logWithUser(
+        `Thread "${thread.getFirstMessageSubject()}" had save errors; not marked as processed`,
+        "WARNING"
+      );
+    }
 
     // Log a summary for the thread if it had attachments
     if (result.totalAttachments > 0) {
@@ -3968,35 +2694,30 @@ function validateConfig() {
     );
   }
 
-  // Validate AI configuration if enabled
-  if (CONFIG.invoiceDetection === "gemini") {
-    if (
-      CONFIG.geminiApiKey === "__GEMINI_API_KEY__" &&
-      !PropertiesService.getScriptProperties().getProperty(
-        CONFIG.geminiApiKeyPropertyName
-      )
-    ) {
-      throw new Error(
-        "Configuration error: Gemini API key is not set but Gemini invoice detection is enabled."
-      );
-    }
-  } else if (CONFIG.invoiceDetection === "openai") {
-    if (
-      CONFIG.openAIApiKey === "__OPENAI_API_KEY__" &&
-      !PropertiesService.getScriptProperties().getProperty(
-        CONFIG.openAIApiKeyPropertyName
-      )
-    ) {
-      throw new Error(
-        "Configuration error: OpenAI API key is not set but OpenAI invoice detection is enabled."
-      );
-    }
+  if (
+    !CONFIG.processedLabelName ||
+    !CONFIG.processingLabelName ||
+    !CONFIG.errorLabelName ||
+    !CONFIG.permanentErrorLabelName ||
+    !CONFIG.tooLargeLabelName
+  ) {
+    throw new Error(
+      "Configuration error: processedLabelName, processingLabelName, errorLabelName, permanentErrorLabelName, and tooLargeLabelName must all be set."
+    );
   }
 
-  // Validate numerical values are within acceptable ranges
-  if (CONFIG.aiConfidenceThreshold < 0 || CONFIG.aiConfidenceThreshold > 1) {
+  const labelNames = [
+    CONFIG.processedLabelName,
+    CONFIG.processingLabelName,
+    CONFIG.errorLabelName,
+    CONFIG.permanentErrorLabelName,
+    CONFIG.tooLargeLabelName,
+  ];
+  if (
+    new Set(labelNames).size !== labelNames.length
+  ) {
     throw new Error(
-      "Configuration error: aiConfidenceThreshold must be between 0 and 1."
+      "Configuration error: processedLabelName, processingLabelName, errorLabelName, permanentErrorLabelName, and tooLargeLabelName must be different."
     );
   }
 
@@ -4010,10 +2731,46 @@ function validateConfig() {
     );
   }
 
-  // Validate interdependent settings
-  if (CONFIG.onlyAnalyzePDFs && !CONFIG.invoiceFileTypes.includes(".pdf")) {
+  if (CONFIG.executionSoftLimitMs < 1000) {
     throw new Error(
-      "Configuration error: onlyAnalyzePDFs is enabled but .pdf is not in invoiceFileTypes."
+      "Configuration error: executionSoftLimitMs must be at least 1000 milliseconds."
+    );
+  }
+
+  if (CONFIG.processingStateTtlMinutes < 1) {
+    throw new Error(
+      "Configuration error: processingStateTtlMinutes must be at least 1 minute."
+    );
+  }
+
+  if (CONFIG.staleRecoveryBatchSize < 1) {
+    throw new Error(
+      "Configuration error: staleRecoveryBatchSize must be at least 1."
+    );
+  }
+
+  if (CONFIG.maxThreadFailureRetries < 1) {
+    throw new Error(
+      "Configuration error: maxThreadFailureRetries must be at least 1."
+    );
+  }
+
+  if (CONFIG.threadFailureStateTtlDays < 1) {
+    throw new Error(
+      "Configuration error: threadFailureStateTtlDays must be at least 1."
+    );
+  }
+
+  const allowedLogLevels = ["DEBUG", "INFO", "WARNING", "ERROR"];
+  if (!allowedLogLevels.includes(String(CONFIG.logLevel || "").toUpperCase())) {
+    throw new Error(
+      "Configuration error: logLevel must be one of DEBUG, INFO, WARNING, ERROR."
+    );
+  }
+
+  if (CONFIG.executionModel !== "effective_user_only") {
+    throw new Error(
+      "Configuration error: executionModel must be \"effective_user_only\"."
     );
   }
 
@@ -4021,24 +2778,28 @@ function validateConfig() {
 }
 
 /**
- * Main function that processes Gmail attachments for authorized users
+ * Main function that processes Gmail attachments for the effective user
  *
  * This function:
  * 1. Validates the configuration
  * 2. Acquires an execution lock to prevent concurrent runs
- * 3. Gets the list of authorized users
- * 4. Processes emails for each user
+ * 3. Computes a safe execution deadline
+ * 4. Processes emails for the current execution user
  * 5. Logs completion
  *
- * @return {boolean} True if processing completed successfully, false if an error occurred or if no users are authorized.
+ * @return {boolean} True if processing completed successfully, false if an error occurred.
  * The function follows a structured flow:
  * - It first validates the configuration to ensure all required settings are properly set.
  * - It attempts to acquire a lock to ensure no concurrent executions.
- * - It retrieves the list of authorized users.
- * - For each user, it processes their emails to save attachments to Google Drive.
+ * - It computes a soft execution deadline to avoid hard timeouts.
+ * - It processes the current user's emails to save attachments to Google Drive.
  * - Logs are generated throughout the process to provide detailed information on the execution status.
  */
 function saveAttachmentsToDrive() {
+  let currentUser = null;
+  let lockAcquired = false;
+  const executionStartMs = new Date().getTime();
+
   try {
     logWithUser("Starting attachment processing", "INFO");
 
@@ -4047,25 +2808,23 @@ function saveAttachmentsToDrive() {
     logWithUser("Configuration validated successfully", "INFO");
 
     // Acquire lock to prevent concurrent executions
-    const currentUser = Session.getEffectiveUser().getEmail();
+    currentUser = Session.getEffectiveUser().getEmail();
     if (!acquireExecutionLock(currentUser)) {
       logWithUser("Another instance is already running. Exiting.", "WARNING");
       return false;
     }
+    lockAcquired = true;
 
-    // Get authorized users
-    const users = getAuthorizedUsers();
-
-    if (!users || users.length === 0) {
-      logWithUser("No authorized users found. Exiting.", "WARNING");
+    // Process only the effective user for this execution.
+    // GmailApp runs in the current execution context, so iterating over a
+    // registered user list would reprocess the same mailbox.
+    const deadlineMs = executionStartMs + CONFIG.executionSoftLimitMs;
+    recoverStaleProcessingThreads(currentUser, deadlineMs);
+    logWithUser(`Processing attachments for current user: ${currentUser}`, "INFO");
+    const processed = processUserEmails(currentUser, true, deadlineMs);
+    if (!processed) {
+      logWithUser(`Processing failed for user: ${currentUser}`, "ERROR");
       return false;
-    }
-
-    logWithUser(`Processing attachments for ${users.length} users`, "INFO");
-
-    // Process each user
-    for (const user of users) {
-      processUserEmails(user);
     }
 
     logWithUser("Attachment processing completed successfully", "INFO");
@@ -4073,6 +2832,17 @@ function saveAttachmentsToDrive() {
   } catch (error) {
     logWithUser(`Error in saveAttachmentsToDrive: ${error.message}`, "ERROR");
     return false;
+  } finally {
+    if (lockAcquired) {
+      try {
+        releaseExecutionLock(currentUser);
+      } catch (releaseError) {
+        logWithUser(
+          `Error releasing execution lock: ${releaseError.message}`,
+          "WARNING"
+        );
+      }
+    }
   }
 }
 

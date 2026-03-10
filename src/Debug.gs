@@ -79,6 +79,55 @@ function diagnoseMissingEmails() {
 }
 
 /**
+ * Compare multiple Gmail search query variants for troubleshooting.
+ * This is intentionally manual-only and should not run in normal processing flow.
+ *
+ * @returns {Object} Query counts by variation
+ */
+function diagnoseSearchVariations() {
+  const searchCriteria = `has:attachment -label:${CONFIG.processedLabelName}`;
+  const variations = [
+    { name: "Standard", query: searchCriteria },
+    { name: "In Inbox", query: `in:inbox ${searchCriteria}` },
+    {
+      name: "With quote",
+      query: `has:attachment -label:\"${CONFIG.processedLabelName}\"`,
+    },
+    {
+      name: "With parentheses",
+      query: `has:attachment AND -(label:${CONFIG.processedLabelName})`,
+    },
+    {
+      name: "Explicit attachment",
+      query: `filename:* -label:${CONFIG.processedLabelName}`,
+    },
+  ];
+
+  const result = {
+    checkedAt: new Date().toISOString(),
+    processedLabelName: CONFIG.processedLabelName,
+    variations: [],
+  };
+
+  logWithUser("Running search-variation diagnostics", "INFO");
+  for (const variation of variations) {
+    const count = GmailApp.search(variation.query).length;
+    result.variations.push({
+      name: variation.name,
+      query: variation.query,
+      count: count,
+    });
+    logWithUser(
+      `Search diagnostic - ${variation.name}: ${count} threads`,
+      "INFO"
+    );
+  }
+
+  Logger.log(`Search variation diagnostics: ${JSON.stringify(result, null, 2)}`);
+  return result;
+}
+
+/**
  * Basic diagnostic that uses a simple search to test access to Gmail
  * This bypasses filters and just counts all messages with attachments
  */
@@ -441,4 +490,23 @@ function dateDiffInMonths(date1, date2) {
   const yearsDiff = d2.getFullYear() - d1.getFullYear();
   const monthsDiff = d2.getMonth() - d1.getMonth();
   return yearsDiff * 12 + monthsDiff;
+}
+
+/**
+ * Inspects persisted failure state for a Gmail thread.
+ *
+ * @param {string} threadId - Gmail thread ID
+ * @returns {Object|null} Stored failure state
+ */
+function inspectThreadFailureState(threadId) {
+  if (!threadId) {
+    logWithUser("inspectThreadFailureState requires a threadId", "WARNING");
+    return null;
+  }
+  const state = getThreadFailureState(threadId);
+  logWithUser(
+    `Failure state for thread ${threadId}: ${JSON.stringify(state)}`,
+    "INFO"
+  );
+  return state;
 }

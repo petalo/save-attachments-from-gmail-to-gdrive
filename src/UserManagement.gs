@@ -361,41 +361,12 @@ function listUsers() {
  * @returns {string} Email address of the next user to process
  */
 function getNextUserInQueue() {
-  const scriptProperties = PropertiesService.getScriptProperties();
-  const queueKey = "USER_QUEUE";
-  const lastProcessedKey = "LAST_PROCESSED_USER";
-
-  try {
-    // Get the queue of users
-    let queue = JSON.parse(scriptProperties.getProperty(queueKey) || "[]");
-
-    // If queue is empty, refresh it with current authorized users
-    if (queue.length === 0) {
-      queue = getAuthorizedUsers();
-      scriptProperties.setProperty(queueKey, JSON.stringify(queue));
-    }
-
-    // Get the last processed user
-    const lastProcessed = scriptProperties.getProperty(lastProcessedKey);
-
-    // Find the next user in the queue
-    let nextUser;
-    if (lastProcessed) {
-      const lastIndex = queue.indexOf(lastProcessed);
-      nextUser = queue[(lastIndex + 1) % queue.length];
-    } else {
-      nextUser = queue[0];
-    }
-
-    // Update the last processed user
-    scriptProperties.setProperty(lastProcessedKey, nextUser);
-
-    logWithUser(`Next user in queue: ${nextUser}`, "INFO");
-    return nextUser;
-  } catch (e) {
-    logWithUser(`Error getting next user in queue: ${e.message}`, "ERROR");
-    return null;
-  }
+  const currentUser = Session.getEffectiveUser().getEmail();
+  logWithUser(
+    `Execution model "${CONFIG.executionModel}" active: queue disabled, using effective user ${currentUser}`,
+    "INFO"
+  );
+  return currentUser;
 }
 
 /**
