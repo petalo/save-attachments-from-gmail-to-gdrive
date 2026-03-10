@@ -31,9 +31,12 @@ This is the modular version of the Gmail Attachment Organizer for Google Drive. 
 - Smart filtering: Detects and skips embedded images and email signatures
 - Batch processing: Processes emails in batches to avoid timeout issues
 - Duplicate prevention: Avoids saving duplicate files
-- Multi-user support: Processes emails for multiple users
+- Per-user execution: Each user runs their own trigger; files go to a shared Drive destination
 - Robust error handling: Complete try/catch blocks with detailed logging
 - Oldest-first processing: By default, processes emails from oldest to newest
+- Thread lifecycle labels: Processing, Error, Permanent Error, and TooLarge labels for granular state tracking
+- Soft execution deadline: Stops safely before the Apps Script 6-minute hard timeout
+- Stale-state recovery: Automatically recovers threads stuck in Processing state
 
 ## Diagnostics and Testing
 

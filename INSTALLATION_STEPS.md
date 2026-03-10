@@ -57,6 +57,11 @@ To configure the script, you need the ID of the Google Drive folder where attach
     - `smallImageMaxSize`: The maximum size (in bytes) for images to be considered small and skipped.
     - `smallImageExtensions`: A list of image file extensions to check when skipping small images.
     - `executionLockTime`: The maximum time (in minutes) to wait for a lock release when preventing concurrent script executions.
+    - `executionSoftLimitMs`: The soft deadline in milliseconds before stopping early to avoid the hard 6-minute GAS timeout (default: 270000 = 4.5 minutes).
+    - `processingLabelName`: Label applied to threads actively being processed (default: "GDrive_Processing").
+    - `errorLabelName`: Label for threads that failed processing (default: "GDrive_Error").
+    - `permanentErrorLabelName`: Label for threads that exceeded the retry limit (default: "GDrive_Error_Permanent").
+    - `tooLargeLabelName`: Label for threads with attachments exceeding the maximum size (default: "GDrive_TooLarge").
     - `maxRetries`: The maximum number of retries for operations that encounter errors.
     - `retryDelay`: The initial delay (in milliseconds) for retries.
     - `maxRetryDelay`: The maximum delay (in milliseconds) for exponential backoff during retries.

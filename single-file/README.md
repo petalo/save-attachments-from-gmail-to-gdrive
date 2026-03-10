@@ -18,7 +18,7 @@ This is the simplified (monolithic) version of the Gmail Attachment Organizer fo
 - Smart filtering: Detects and skips embedded images and email signatures
 - Batch processing: Processes emails in batches to avoid timeout issues
 - Duplicate prevention: Avoids saving duplicate files
-- Multi-user support: Processes emails for multiple users
+- Per-user execution: Each user runs their own trigger independently
 - Robust error handling: Complete try/catch blocks with detailed logging
 - Oldest-first processing: By default, processes emails from oldest to newest
 

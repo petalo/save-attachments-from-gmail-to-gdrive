@@ -11,17 +11,13 @@ This Google Apps Script automatically saves Gmail attachments to Google Drive, o
 - [Features](#features)
 - [Execution Flow](#execution-flow)
   - [High-Level Overview](#high-level-overview)
+  - [Flow Diagram](#flow-diagram)
   - [Detailed Breakdown](#detailed-breakdown)
 - [Thread Labeling System](#thread-labeling-system)
 - [Attachment Filtering System](#attachment-filtering-system)
 - [Required Permissions](#required-permissions)
-- [Managing Users](#managing-users)
+- [Execution Model and Users](#execution-model-and-users)
 - [Configuration Options](#configuration-options)
-  - [AI Configuration](#ai-configuration)
-    - [Gemini Configuration (Recommended)](#gemini-configuration-recommended)
-    - [OpenAI Configuration (Legacy)](#openai-configuration-legacy)
-    - [Email-Based Invoice Detection](#email-based-invoice-detection)
-    - [Shared AI Settings](#shared-ai-settings)
 - [Advanced Usage](#advanced-usage)
   - [Custom Processing Options](#custom-processing-options)
 - [Performance Considerations](#performance-considerations)
@@ -34,10 +30,9 @@ This Google Apps Script automatically saves Gmail attachments to Google Drive, o
 **Key Features:**
 
 - Domain-based folder organization
-- Multiple invoice detection methods (AI-powered and email-based)
 - Smart attachment filtering
 - Batch processing and duplicate prevention
-- Multi-user support and robust error handling
+- Shared-drive friendly, per-user independent execution
 - Email date preservation
 
 ## Simple Installation (Recommended)
@@ -127,10 +122,6 @@ Each environment can have its own:
 2. Create the following files in your project:
     - `Config.gs`
     - `Utils.gs`
-    - `AIDetection.gs`
-    - `GeminiDetection.gs`
-    - `InvoiceSenders.gs` (for email-based invoice detection)
-    - `InvoiceDetection.gs` (for email-based invoice detection)
     - `UserManagement.gs`
     - `AttachmentFilters.gs`
     - `FolderManagement.gs`
@@ -198,18 +189,10 @@ Each environment can have its own:
 This script provides the following features:
 
 - **Domain-Based Organization:** Automatically creates folders based on sender domains.
-- **Invoice Detection Options:**
-  - **AI-Powered Detection:** Uses Google Gemini or OpenAI to identify invoices with high accuracy.
-    - **Gemini Details:** \[GEMINI\_INTEGRATION.md](./GEMINI_INTEGRATION.md)
-    - **OpenAI Details:** \[OPENAI\_INTEGRATION.md](./OPENAI_INTEGRATION.md)
-    - **Privacy-Focused Analysis (Gemini):** Gemini integration analyzes only metadata, not full email content.
-    - **Personal Data Protection (Gemini):** Email addresses are anonymized; only domain names are shared with AI.
-  - **Email-Based Detection:** Identifies invoices based on sender email patterns without using AI.
-  - **PDF-Only Processing:** Invoice detection is activated only for emails with PDF attachments.
 - **Smart Attachment Filtering:** Identifies and skips embedded images and email signatures.
 - **Batch Processing:** Processes emails in batches to avoid timeout issues.
 - **Duplicate Prevention:** Prevents saving duplicate files.
-- **Multi-User Support:** Processes emails for multiple users and maintains a user queue.
+- **Execution Model:** Each execution processes only the mailbox of the effective user.
 - **Robust Error Handling:** Comprehensive try/catch blocks with logging.
 - **Oldest-First Processing:** Processes emails from oldest to newest by default (configurable).
 - **Email Date Preservation:** Stores original email date in file descriptions.
@@ -224,17 +207,63 @@ This script provides the following features:
 4. Attachment Processing
 5. Error Handling
 
+### Flow Diagram
+
+```mermaid
+flowchart TD
+  A["Trigger/Manual Run: saveAttachmentsToDrive()"] --> B["Validate configuration"]
+  B --> C{"Per-user lock acquired?"}
+  C -- "No" --> X["Exit early (another execution running)"]
+  C -- "Yes" --> D["Execution model: effective user mailbox only"]
+  D --> E["Recover stale Processing states (TTL + bounded batch)"]
+  E --> F["Search one Gmail page: has:attachment and not Processed/Permanent/TooLarge"]
+  F --> G{"Threads found?"}
+  G -- "No" --> Y["Release lock and finish"]
+  G -- "Yes" --> H["Process page oldest-first (batchSize)"]
+
+  H --> I["Per thread: add Processing label + thread checkpoint"]
+  I --> J["Iterate messages and attachments"]
+  J --> K{"Attachment too large?"}
+  K -- "Yes" --> K1["Register too_large failure + mark thread as TooLarge"]
+  K1 --> J
+  K -- "No" --> L{"Should skip by filters?"}
+  L -- "Yes" --> J
+  L -- "No" --> M["Save attachment (source checkpoint + dedupe)"]
+  M --> N{"Saved?"}
+  N -- "Yes" --> J
+  N -- "No" --> P["Register failure cause (transient/permanent)"]
+  P --> J
+
+  J --> Q{"Thread outcome"}
+  Q -- "Saved without failures/too_large" --> Q1["Label Processed; clear Error/Permanent/TooLarge; clear failure state"]
+  Q -- "Only filtered attachments" --> Q2["Label Processed; clear Error/Permanent/TooLarge; clear failure state"]
+  Q -- "Save failures" --> Q3["Label Error; add Permanent if retry limit exceeded"]
+  Q -- "Only too_large attachments" --> Q4["Label TooLarge"]
+
+  Q1 --> R["Finally: remove Processing label + clear thread checkpoint"]
+  Q2 --> R
+  Q3 --> R
+  Q4 --> R
+
+  R --> S{"Soft deadline reached?"}
+  S -- "Yes" --> T["Stop safely; continue in next execution"]
+  S -- "No" --> U{"More threads in current page?"}
+  U -- "Yes" --> I
+  U -- "No" --> V["Release lock and finish"]
+  T --> V
+```
+
 ### Detailed Breakdown
 
 1. **Script Initialization:**
     - Validates configuration settings.
-    - Obtains reference to the main Google Drive folder.
-    - Gets or creates the Gmail label for marking processed emails.
-    - Gets the next user in the queue to process.
+    - Acquires per-user execution lock.
+    - Performs stale-state recovery for interrupted runs.
+    - Obtains reference to the main Google Drive folder and labels.
 2. **User Processing:**
-    - Verifies user permissions for Gmail and Drive access.
-    - Switches to user context for processing.
-    - Maintains a queue of users to process in turn.
+    - Uses only `Session.getEffectiveUser().getEmail()` for mailbox processing.
+    - Does not rotate or impersonate other users during runtime.
+    - Supports parallelism by letting each user run their own trigger safely.
 3. **Email Discovery:**
     - Searches Gmail for unprocessed emails with attachments.
     - Processes emails from oldest to newest by default (configurable).
@@ -337,9 +366,11 @@ This script requires the following authorization scopes. You'll be prompted to g
 - `<https://www.googleapis.com/auth/script.scriptapp>` (for creating triggers)
 - `<https://www.googleapis.com/auth/script.external_request>` (for external API calls if needed)
 
-## Managing Users
+## Execution Model and Users
 
-The script includes functions for managing user access, primarily useful in multi-user environments.
+Runtime model: `effective_user_only`.
+Each trigger execution processes only the current effective user's Gmail mailbox, while storing files in the shared Drive destination.
+User-list helper functions are administrative only (onboarding/permissions), not runtime mailbox orchestration.
 
 **Available User Management Functions:**
 
@@ -363,125 +394,6 @@ The `Config.gs` file contains all configurable options, allowing you to tailor t
 - `skipFileTypes`: Additional file types to skip (e.g., calendar invitations, etc.).
 - `attachmentTypesWhitelist`: List of MIME types that should always be saved.
 - `batchSize`: Number of threads to process in each execution (default: 20).
-
-### AI Configuration
-
-The script integrates with AI services (Gemini and OpenAI) and email-based detection to provide invoice identification. You can configure the detection behavior using the following options.
-
-#### Gemini Configuration (Recommended)
-
-These options control the Gemini AI integration.
-
-- `geminiEnabled`: Enable/disable Gemini API for invoice detection.
-- `geminiApiKey`: API key for Gemini (set via .env file or Script Properties).
-- `geminiModel`: Model to use (default: "gemini-2.0-flash").
-- `geminiMaxTokens`: Maximum tokens for the AI response.
-- `geminiTemperature`: Temperature setting for response determinism (0.0 - 1.0).
-
-**Sample Metadata Sent to Gemini:**
-
-To ensure transparency and demonstrate our commitment to user privacy, here's an example of the metadata sent to the Gemini API:
-
-```json
-{
-  "subject": "Invoice #12345 - Example Company",
-  "senderDomain": "example.com",
-  "date": "2025-03-15T10:30:00.000Z",
-  "hasAttachments": true,
-  "attachmentTypes": [
-    "pdf"
-  ],
-  "attachmentContentTypes": [
-    "application/pdf"
-  ],
-  "keywordsFound": [
-    "invoice",
-    "#12345",
-    "payment",
-    "$299.99"
-  ],
-  "historicalPatterns": {
-    "count": 3,
-    "subjectPatterns": {
-      "commonPrefix": "Invoice",
-      "commonSuffix": "Example Company",
-      "containsInvoiceTerms": true,
-      "hasNumericPatterns": true
-    },
-    "datePatterns": {
-      "frequency": "monthly",
-      "averageIntervalDays": 30,
-      "sameDayOfMonth": true
-    },
-    "rawSubjects": [
-      "Invoice #12342 - Example Company",
-      "Invoice #12343 - Example Company",
-      "Invoice #12344 - Example Company"
-    ],
-    "rawDates": [
-      "2024-12-15T10:30:00.000Z",
-      "2025-01-15T10:30:00.000Z",
-      "2025-02-15T10:30:00.000Z"
-    ]
-  }
-}
-```
-
-**Important Privacy Note:**
-
-- Only domain names are sent, not full email addresses, to protect user privacy.
-
-#### OpenAI Configuration (Legacy)
-
-These options are for the (now legacy) OpenAI integration.
-
-- `openAIEnabled`: Enable/disable OpenAI API for invoice detection.
-- `openAIApiKey`: API key for OpenAI (set via .env file or Script Properties).
-- `openAIModel`: Model to use (default: "gpt-3.5-turbo").
-- `openAIMaxTokens`: Maximum tokens for the AI response.
-- `openAITemperature`: Temperature setting for response determinism (0.0 - 1.0).
-
-#### Email-Based Invoice Detection
-
-This option provides a simple, efficient way to identify invoices based on the sender's email address.
-
-- Set `invoiceDetection` to `"email"` to enable this method.
-- Create or modify the `InvoiceSenders.gs` file with a list of known invoice senders.
-
-**Supported Formats in InvoiceSenders.gs:**
-
-```javascript
-const INVOICE_SENDERS = [
-  // Full domains (match any email from this domain)
-  "pipedrivebilling.com",
-
-  // Specific email addresses
-  "billing@box.com",
-  "invoice@travelperk.com",
-
-  // Pattern matching with wildcards
-  "invoice+statements+*@stripe.com",  // Matches any email that starts with "invoice+statements+"
-  "*-noreply@google.com",             // Matches any email that ends with "-noreply@google.com"
-  "invoice*info@example.com"          // Matches emails that start with "invoice" and end with "info@example.com"
-];
-```
-
-This approach doesn't require any API keys and is ideal for organizations with a known set of invoice senders.
-
-#### Shared AI Settings
-
-These settings are shared between the Gemini and OpenAI integrations.
-
-- `skipAIForDomains`: Domains to exclude from AI analysis.
-- `onlyAnalyzePDFs`: Only process emails with PDF attachments for AI analysis.
-- `strictPdfCheck`: Check both file extension and MIME type for PDFs.
-- `fallbackToKeywords`: Fall back to keyword detection if AI fails.
-- `aiConfidenceThreshold`: Confidence threshold for AI detection (0.0-1.0).
-
-**Additional AI Information:**
-
-- \[GEMINI\_INTEGRATION.md](./GEMINI_INTEGRATION.md) for Gemini details
-- \[OPENAI\_INTEGRATION.md](./OPENAI_INTEGRATION.md) for OpenAI details
 
 ## Advanced Usage
 
@@ -537,17 +449,14 @@ You can customize the script's attachment filtering behavior to suit your needs.
 Understanding the file structure can be helpful for debugging or extending the script.
 
 - `Config.gs`: Configuration settings and constants.
-- `Utils.gs`: Utility functions for logging, retries, and user settings.
-- `AIDetection.gs`: OpenAI API integration for invoice detection (legacy).
-- `GeminiDetection.gs`: Gemini API integration for invoice detection (recommended).
-- `InvoiceSenders.gs`: List of known invoice senders for email-based detection.
-- `InvoiceDetection.gs`: Logic for email-based invoice detection.
+- `Utils.gs`: Utility functions for logging, retries, and domain extraction.
 - `UserManagement.gs`: User authorization and permission management.
 - `AttachmentFilters.gs`: Functions for determining which attachments to process.
 - `FolderManagement.gs`: Google Drive folder creation and management.
 - `AttachmentProcessing.gs`: Functions for saving attachments to Drive.
 - `GmailProcessing.gs`: Gmail thread and message processing.
 - `Main.gs`: Entry points and main execution flow.
+- `Debug.gs`: Manual debug helpers (not used in automated runs).
 - `appsscript.json`: Script manifest with required OAuth scopes.
 
 ## Troubleshooting
@@ -570,28 +479,6 @@ This section provides guidance on resolving common issues.
 
 - **Unexpected Thread Processing:**
   - If a thread is processed but attachments are missing, review the logs to see if they were filtered (e.g., small images, embedded content).
-
-- **Gemini API Issues:**
-  - If Gemini invoice detection is not working:
-    - Run `GeminiDetection.testGeminiConnection()` to verify API connectivity.
-    - Ensure your Gemini API key is valid.
-    - Run `npm run test:gemini` locally to test the API integration.
-    - Adjust the `aiConfidenceThreshold` if you experience false positives or negatives.
-    - Review logs in the `logs` directory for detailed error information.
-
-- **OpenAI API Issues:**
-  - If OpenAI invoice detection is not working:
-    - Run `AIDetection.testOpenAIConnection()` to verify API connectivity.
-    - Ensure your OpenAI API key is valid and has sufficient credits.
-    - Run `npm run test:openai` locally to test the API integration.
-    - Review logs in the `logs` directory for detailed error information.
-
-- **Email-Based Invoice Detection Issues:**
-  - If email-based invoice detection is not working:
-    - Verify that `invoiceDetection` is set to `"email"` in `Config.gs`.
-    - Check that `InvoiceSenders.gs` contains the correct email addresses or patterns.
-    - Ensure that the PDF attachment requirement is properly configured if using `onlyAnalyzePDFs`.
-    - Review logs to see if the sender matching logic is working as expected.
 
 ## Available Commands
 
@@ -628,9 +515,6 @@ npm run pull               # Download the latest version from Google Apps Script
 
 #   Testing commands
 npm run test               # Test if the folder ID is valid
-npm run test:openai        # Test OpenAI API connection
-npm run test:gemini        # Test Gemini API connection
-npm run test:api-keys      # Test all API keys
 ```
 
 ## License
