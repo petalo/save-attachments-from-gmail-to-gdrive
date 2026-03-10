@@ -1,11 +1,20 @@
 # Run git-secrets to scan for secrets
 # We're only scanning staged changes to avoid false positives in documentation
-git diff --cached --name-only | xargs git secrets --scan || {
+git diff --cached --name-only --diff-filter=d | xargs git secrets --scan || {
     echo "git-secrets found potential secrets in your changes."
     echo "If these are false positives, you can add them to .gitallowed"
     echo "or use --no-verify to bypass this check (not recommended)."
     exit 1
 }
+
+# Verify single-file/Code.gs never contains real values instead of placeholders
+if git diff --cached --name-only | grep -q "single-file/Code.gs"; then
+    if ! git show ":single-file/Code.gs" | grep -q 'mainFolderId: "__FOLDER_ID__"'; then
+        echo "ERROR: single-file/Code.gs does not contain the __FOLDER_ID__ placeholder."
+        echo "It may contain a real folder ID. Run 'npm run build' (not build:prod) to regenerate it."
+        exit 1
+    fi
+fi
 
 # Run the existing test script if all checks pass
 npm test

@@ -58,32 +58,20 @@ dotenv.config({ path: envPath });
 console.log("Loaded environment variables:");
 console.log(`FOLDER_ID: ${process.env.FOLDER_ID || "not set"}`);
 console.log(
-  `OPENAI_API_KEY: ${process.env.OPENAI_API_KEY ? "set (masked)" : "not set"}`
-);
-console.log(
-  `GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? "set (masked)" : "not set"}`
-);
-console.log(
-  `PROCESSED_LABEL_NAME: ${process.env.PROCESSED_LABEL_NAME || "not set"}`
-);
-console.log(
-  `INVOICES_FOLDER_NAME: ${process.env.INVOICES_FOLDER_NAME || "not set"}`
+  `PROCESSED_LABEL_NAME: ${process.env.PROCESSED_LABEL_NAME || "not set"}`,
 );
 
 // Logical order of files
 const fileOrder = [
   "Config.gs", // Configuration first
-  "Utils.gs", // General utilities
-  "HistoricalPatterns.gs", // Historical pattern analysis for invoice detection
-  "OpenAIDetection.gs", // OpenAI Detection for invoice analysis (legacy)
-  "GeminiDetection.gs", // Gemini Detection for invoice analysis (recommended)
-  "InvoiceDetection.gs", // Email-based invoice detection logic
-  "VerifyAPIKeys.gs", // API key verification utilities
+  "Utils.gs", // Cross-cutting utilities (logging, locks, retry, domains)
   "UserManagement.gs", // User management
+  "LabelManagement.gs", // Create/get Gmail labels
+  "ThreadState.gs", // Processing checkpoints + failure state
   "AttachmentFilters.gs", // Attachment filters
   "FolderManagement.gs", // Folder management
   "AttachmentProcessing.gs", // Attachment processing
-  "GmailProcessing.gs", // Gmail processing
+  "GmailProcessing.gs", // Search and process email threads
   "Main.gs", // Main functions
   // Debug files are intentionally not included
 ];
@@ -91,7 +79,6 @@ const fileOrder = [
 // Files to copy separately (not merged into Code.gs)
 // This includes both .gs files that should remain separate and other file types
 const filesToCopyDirectly = [
-  "InvoiceSenders.gs", // List of invoice senders for email-based detection
   "appsscript.json", // Project manifest
   // Add any other files that should be copied directly here
 ];
@@ -107,7 +94,7 @@ function getProjectTimezone() {
     }
   } catch (error) {
     console.warn(
-      `Warning: Could not read timezone from src/appsscript.json: ${error.message}`
+      `Warning: Could not read timezone from src/appsscript.json: ${error.message}`,
     );
   }
   return "UTC";
@@ -143,7 +130,7 @@ function getFormattedTimestamp() {
     return `${formattedDate} (${timezone})`;
   } catch (error) {
     console.warn(
-      `Warning: Could not format date with timezone ${timezone}: ${error.message}`
+      `Warning: Could not format date with timezone ${timezone}: ${error.message}`,
     );
     // Fallback seguro con el año correcto
     const month = String(now.getMonth() + 1).padStart(2, "0");
@@ -204,7 +191,7 @@ const buildTimestamp = getFormattedTimestamp();
 // Start with the header and timestamp comment for build version
 fs.writeFileSync(
   outputFileBuild,
-  `// Build generated on: ${buildTimestamp}\n${header}`
+  `// Build generated on: ${buildTimestamp}\n${header}`,
 );
 
 // Process each file in the specified order
@@ -243,25 +230,7 @@ ${content}`;
         const mainFolderIdRegex = /(mainFolderId:\s*")[^"]*(")/;
         buildContent = buildContent.replace(
           mainFolderIdRegex,
-          `$1${process.env.FOLDER_ID}$2`
-        );
-      }
-
-      // Replace OPENAI_API_KEY if available
-      if (process.env.OPENAI_API_KEY) {
-        const openAIApiKeyRegex = /(openAIApiKey:\s*")[^"]*(")/;
-        buildContent = buildContent.replace(
-          openAIApiKeyRegex,
-          `$1${process.env.OPENAI_API_KEY}$2`
-        );
-      }
-
-      // Replace GEMINI_API_KEY if available
-      if (process.env.GEMINI_API_KEY) {
-        const geminiApiKeyRegex = /(geminiApiKey:\s*")[^"]*(")/;
-        buildContent = buildContent.replace(
-          geminiApiKeyRegex,
-          `$1${process.env.GEMINI_API_KEY}$2`
+          `$1${process.env.FOLDER_ID}$2`,
         );
       }
 
@@ -270,23 +239,14 @@ ${content}`;
         const processedLabelNameRegex = /(processedLabelName:\s*")[^"]*(")/;
         buildContent = buildContent.replace(
           processedLabelNameRegex,
-          `$1${process.env.PROCESSED_LABEL_NAME}$2`
-        );
-      }
-
-      // Replace invoicesFolderName if available
-      if (process.env.INVOICES_FOLDER_NAME) {
-        const invoicesFolderNameRegex = /(invoicesFolderName:\s*")[^"]*(")/;
-        buildContent = buildContent.replace(
-          invoicesFolderNameRegex,
-          `$1${process.env.INVOICES_FOLDER_NAME}$2`
+          `$1${process.env.PROCESSED_LABEL_NAME}$2`,
         );
       }
     }
     fs.appendFileSync(outputFileBuild, buildContent);
   } else {
     console.warn(
-      `Warning! The file src/${filename} does not exist and will be skipped.`
+      `Warning! The file src/${filename} does not exist and will be skipped.`,
     );
   }
 });
@@ -300,12 +260,9 @@ function getModuleDescription(moduleName) {
   const descriptions = {
     CONFIG: "CONFIGURATION",
     UTILS: "UTILITIES",
-    HISTORICALPATTERNS: "HISTORICAL PATTERN ANALYSIS",
-    OPENAIDETECTION: "OPENAI DETECTION",
-    GEMINIDETECTION: "GEMINI DETECTION",
-    INVOICEDETECTION: "EMAIL-BASED INVOICE DETECTION",
-    VERIFYAPIKEYS: "API KEY VERIFICATION",
     USERMANAGEMENT: "USER MANAGEMENT",
+    LABELMANAGEMENT: "LABEL MANAGEMENT",
+    THREADSTATE: "THREAD STATE",
     ATTACHMENTFILTERS: "ATTACHMENT FILTERS",
     FOLDERMANAGEMENT: "FOLDER MANAGEMENT",
     ATTACHMENTPROCESSING: "ATTACHMENT PROCESSING",
@@ -330,13 +287,13 @@ if (process.env.SCRIPT_ID) {
 
   fs.writeFileSync(
     path.join(__dirname, ".clasp.json"),
-    JSON.stringify(claspConfig, null, 2)
+    JSON.stringify(claspConfig, null, 2),
   );
 
   console.log(`\nUpdated .clasp.json for ${env} environment`);
 } else {
   console.warn(
-    "Warning! SCRIPT_ID not found in environment variables. .clasp.json not updated."
+    "Warning! SCRIPT_ID not found in environment variables. .clasp.json not updated.",
   );
 }
 
@@ -356,7 +313,7 @@ filesToCopyDirectly.forEach((filename) => {
       console.log(`- ${filename} copied to both directories`);
     } else {
       console.warn(
-        `Warning! The file src/${filename} does not exist and will be skipped.`
+        `Warning! The file src/${filename} does not exist and will be skipped.`,
       );
     }
   } catch (error) {
