@@ -38,9 +38,13 @@ function getDomainFolder(sender, mainFolder) {
     // Use a lock to prevent race conditions when creating folders
     const lock = LockService.getScriptLock();
     try {
-      lock.tryLock(10000); // Wait up to 10 seconds for the lock
+      if (!lock.tryLock(10000)) {
+        throw new Error(
+          `Could not acquire lock for domain folder "${domain}" — skipping to avoid duplicates`
+        );
+      }
 
-      // First check if the folder exists
+      // Check if the folder exists
       const folders = withRetry(
         () => mainFolder.getFoldersByName(domain),
         "getting domain folder"
@@ -50,30 +54,30 @@ function getDomainFolder(sender, mainFolder) {
         const folder = folders.next();
         logWithUser(`Using existing domain folder: ${domain}`);
         return folder;
-      } else {
-        // Double-check that the folder still doesn't exist
-        // This helps in cases where another execution created it just now
-        const doubleCheckFolders = withRetry(
-          () => mainFolder.getFoldersByName(domain),
-          "double-checking domain folder"
-        );
-
-        if (doubleCheckFolders.hasNext()) {
-          const folder = doubleCheckFolders.next();
-          logWithUser(
-            `Using existing domain folder (after double-check): ${domain}`
-          );
-          return folder;
-        }
-
-        // If we're still here, we can safely create the folder
-        const newFolder = withRetry(
-          () => mainFolder.createFolder(domain),
-          "creating domain folder"
-        );
-        logWithUser(`Created new domain folder: ${domain}`);
-        return newFolder;
       }
+
+      // Brief pause to mitigate Drive eventual consistency before creating
+      Utilities.sleep(1000);
+
+      const foldersRecheck = withRetry(
+        () => mainFolder.getFoldersByName(domain),
+        "rechecking domain folder after delay"
+      );
+
+      if (foldersRecheck.hasNext()) {
+        const folder = foldersRecheck.next();
+        logWithUser(
+          `Using existing domain folder (after recheck): ${domain}`
+        );
+        return folder;
+      }
+
+      const newFolder = withRetry(
+        () => mainFolder.createFolder(domain),
+        "creating domain folder"
+      );
+      logWithUser(`Created new domain folder: ${domain}`);
+      return newFolder;
     } finally {
       // Always release the lock
       if (lock.hasLock()) {
@@ -90,9 +94,12 @@ function getDomainFolder(sender, mainFolder) {
     try {
       const lock = LockService.getScriptLock();
       try {
-        lock.tryLock(10000);
+        if (!lock.tryLock(10000)) {
+          throw new Error(
+            `Could not acquire lock for unknown folder — skipping to avoid duplicates`
+          );
+        }
 
-        // Check for unknown folder
         const unknownFolders = withRetry(
           () => mainFolder.getFoldersByName("unknown"),
           "getting unknown folder"
@@ -102,29 +109,29 @@ function getDomainFolder(sender, mainFolder) {
           const folder = unknownFolders.next();
           logWithUser(`Using fallback 'unknown' folder for ${sender}`);
           return folder;
-        } else {
-          // Double-check that the unknown folder still doesn't exist
-          const doubleCheckUnknown = withRetry(
-            () => mainFolder.getFoldersByName("unknown"),
-            "double-checking unknown folder"
-          );
-
-          if (doubleCheckUnknown.hasNext()) {
-            const folder = doubleCheckUnknown.next();
-            logWithUser(
-              `Using fallback 'unknown' folder (after double-check) for ${sender}`
-            );
-            return folder;
-          }
-
-          // Create the unknown folder
-          const newFolder = withRetry(
-            () => mainFolder.createFolder("unknown"),
-            "creating unknown folder"
-          );
-          logWithUser(`Created fallback 'unknown' folder for ${sender}`);
-          return newFolder;
         }
+
+        Utilities.sleep(1000);
+
+        const unknownRecheck = withRetry(
+          () => mainFolder.getFoldersByName("unknown"),
+          "rechecking unknown folder after delay"
+        );
+
+        if (unknownRecheck.hasNext()) {
+          const folder = unknownRecheck.next();
+          logWithUser(
+            `Using fallback 'unknown' folder (after recheck) for ${sender}`
+          );
+          return folder;
+        }
+
+        const newFolder = withRetry(
+          () => mainFolder.createFolder("unknown"),
+          "creating unknown folder"
+        );
+        logWithUser(`Created fallback 'unknown' folder for ${sender}`);
+        return newFolder;
       } finally {
         // Always release the lock
         if (lock.hasLock()) {
