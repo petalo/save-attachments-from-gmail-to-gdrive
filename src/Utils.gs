@@ -342,6 +342,75 @@ function releaseExecutionLock(userEmail) {
 }
 
 /**
+ * Returns the per-user processing cursor as Unix epoch seconds.
+ * The cursor represents the newest thread date we have fully attempted.
+ * On first run, initializes to CONFIG.initialCursorDaysBack days ago.
+ *
+ * @param {string} userEmail
+ * @returns {number} Epoch seconds
+ */
+function getUserCursorState(userEmail) {
+  const emailKey = (userEmail || "").replace(/[^a-z0-9]/gi, "_");
+  const props = PropertiesService.getUserProperties();
+  const epochStr = props.getProperty(`CURSOR_${emailKey}`);
+  const offsetStr = props.getProperty(`CURSOR_OFFSET_${emailKey}`);
+  if (epochStr) {
+    return { epoch: parseInt(epochStr, 10), offset: parseInt(offsetStr || "0", 10) };
+  }
+  const initial = new Date();
+  initial.setDate(initial.getDate() - CONFIG.initialCursorDaysBack);
+  const epoch = Math.floor(initial.getTime() / 1000);
+  logWithUser(
+    `First run detected — cursor initialized to ${initial.toISOString()} (${CONFIG.initialCursorDaysBack} days back). Catch-up mode will run until cursor reaches present.`,
+    "INFO"
+  );
+  return { epoch, offset: 0 };
+}
+
+/**
+ * Persists the per-user processing cursor and pagination offset.
+ *
+ * @param {string} userEmail
+ * @param {number} epochSeconds
+ * @param {number} [offset=0] - Search pagination offset within the current window
+ */
+function setUserCursorState(userEmail, epochSeconds, offset = 0) {
+  const emailKey = (userEmail || "").replace(/[^a-z0-9]/gi, "_");
+  const props = PropertiesService.getUserProperties();
+  props.setProperty(`CURSOR_${emailKey}`, String(epochSeconds));
+  props.setProperty(`CURSOR_OFFSET_${emailKey}`, String(offset));
+  logWithUser(
+    `Cursor: epoch=${new Date(epochSeconds * 1000).toISOString()}, offset=${offset}`,
+    "INFO"
+  );
+}
+
+/**
+ * Resets the per-user processing cursor, triggering a full re-scan on the next run.
+ *
+ * Run this function directly from the Apps Script editor when you need to force
+ * reprocessing of historical email (e.g. after a misconfiguration or to recover
+ * attachments that were skipped). The next execution will reinitialize the cursor
+ * to CONFIG.initialCursorDaysBack days ago and begin catch-up mode.
+ *
+ * Already-saved attachments will not be duplicated — source_attachment_id dedup
+ * in saveAttachment detects and skips files that already exist in Drive.
+ *
+ * @param {string} [userEmail] - Defaults to the currently authenticated user.
+ */
+function resetUserCursor(userEmail) {
+  const email = userEmail || Session.getEffectiveUser().getEmail();
+  const emailKey = email.replace(/[^a-z0-9]/gi, "_");
+  const props = PropertiesService.getUserProperties();
+  props.deleteProperty(`CURSOR_${emailKey}`);
+  props.deleteProperty(`CURSOR_OFFSET_${emailKey}`);
+  logWithUser(
+    `Cursor reset for ${email}. Next run will start from ${CONFIG.initialCursorDaysBack} days ago.`,
+    "INFO"
+  );
+}
+
+/**
  * Generates a unique filename to avoid collisions in the same folder
  *
  * @param {string} originalFilename - The original file name

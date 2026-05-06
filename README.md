@@ -13,11 +13,11 @@ This Google Apps Script automatically saves Gmail attachments to Google Drive, o
   - [High-Level Overview](#high-level-overview)
   - [Flow Diagram](#flow-diagram)
   - [Detailed Breakdown](#detailed-breakdown)
-- [Thread Labeling System](#thread-labeling-system)
 - [Attachment Filtering System](#attachment-filtering-system)
 - [Required Permissions](#required-permissions)
 - [Execution Model and Users](#execution-model-and-users)
 - [Configuration Options](#configuration-options)
+- [Thread Processing and Cursor System](#thread-processing-and-cursor-system)
 - [Advanced Usage](#advanced-usage)
   - [Custom Processing Options](#custom-processing-options)
 - [Performance Considerations](#performance-considerations)
@@ -285,37 +285,31 @@ flowchart TD
     - Graceful failure handling to prevent script termination on single-item errors.
     - Retry logic with exponential backoff for transient errors.
 
-## Thread Labeling System
+## Thread Processing and Cursor System
 
-The script uses labels at the thread level to track processed emails.
+The script uses a **date cursor per user** to track how far processing has advanced. This replaces the previous label-only approach and correctly handles new messages arriving in already-processed threads.
 
-**Label Application:**
+**How the cursor works:**
 
-- The "GDrive_Processed" label is applied to entire Gmail threads, not individual messages.
-- A thread is labeled when:
-  - At least one valid attachment is saved from any message in the thread, OR
-  - All messages in the thread have attachments, but they were all filtered out (e.g., embedded images).
-- The script never labels threads that have no attachments at all.
+State is stored in `UserProperties` (per user, never shared) as a Unix timestamp — `CURSOR_<user_email>`. On each run, the script builds a Gmail search based on the cursor position:
 
-**Handling New Messages in Processed Threads:**
+- **Catch-up mode** (cursor is more than `cursorWindowBufferDays` behind now): searches a bounded window `after:${cursor} before:${cursor + cursorWindowDays}`. Advances the cursor by `cursorWindowDays` only when the window returns fewer threads than `batchSize` (window exhausted). Guarantees complete coverage of each time slice before moving forward.
 
-- New messages added to a thread that already has the "GDrive_Processed" label will NOT be processed automatically by this script.
-- If a new message with an important attachment is added to a previously processed thread:
-  - You can manually remove the "GDrive_Processed" label from the thread to force reprocessing in the next script run.
-  - Forward the message to yourself in a new thread (creating a new thread without the label).
+- **Incremental mode** (cursor is within `cursorWindowBufferDays` of now): searches `after:${now - cursorWindowBufferDays}`. Re-scans the recent buffer window on every run. This automatically catches new replies with attachments in threads that were processed in earlier runs.
 
-**Rationale for Thread-Level Labeling:**
+The cursor only advances after a batch completes without timeout, preventing data loss when the 6-minute Apps Script limit is hit.
 
-- Gmail's API is optimized for thread-level operations.
-- Most email conversations maintain context in a thread.
-- Reduces processing overhead by avoiding repeated analysis of related messages.
-- Prevents running into quota limits for Gmail API calls.
+**First run / reset:**
 
-**Note:** If you frequently receive important new attachments in existing threads, consider these options:
+If no cursor exists (first deployment, or after manual reset via `UserProperties`), the cursor is initialized to `now - initialCursorDaysBack` days ago. All threads from that point onward will be scanned. Attachments already saved in Drive are detected and skipped via the `source_attachment_id` stored in each file's description — no duplicates are created.
 
-1. Adjust email sending/replying behavior to create new threads for important attachments.
-2. Implement a more sophisticated Message-ID based tracking system (would require significant code changes).
-3. Run the script more frequently and maintain a separate record of processed message IDs.
+**The `GDrive_Processed` label:**
+
+The label is retained as a **cosmetic badge** only — it appears in Gmail so you can see which threads have been processed. It is no longer used as a search filter. The cursor + `source_attachment_id` dedup together replace its functional role.
+
+**Handling new messages in active threads:**
+
+Covered automatically. When a thread receives a new message with an attachment, the incremental buffer ensures the thread is re-scanned within `cursorWindowBufferDays` days. Already-saved attachments from previous messages are detected as duplicates in O(1) and skipped; only the new attachment is saved.
 
 ## Attachment Filtering System
 
@@ -394,6 +388,16 @@ The `Config.gs` file contains all configurable options, allowing you to tailor t
 - `skipFileTypes`: Additional file types to skip (e.g., calendar invitations, etc.).
 - `attachmentTypesWhitelist`: List of MIME types that should always be saved.
 - `batchSize`: Number of threads to process in each execution (default: 20).
+
+**Cursor configuration (incremental processing):**
+
+- `initialCursorDaysBack`: How far back (in days) to initialize the cursor on the very first run per user. Default: `180`. Increase for deeper historical backfill; set to a small value (e.g. `7`) if you only want to catch up on recent email.
+- `cursorWindowDays`: Size (in days) of each bounded catch-up window. The cursor advances by this many days when a window is exhausted. Default: `3`.
+- `cursorWindowBufferDays`: When the cursor is within this many days of now, the script switches to incremental mode and re-scans this window on every run to catch new replies in already-processed threads. Default: `7`.
+
+**Resetting the cursor:**
+
+To force a full re-scan from `initialCursorDaysBack` days ago, run `resetUserCursor()` directly from the Apps Script editor. It deletes the stored cursor for the current user; the next execution reinitializes it and enters catch-up mode. Already-saved attachments are not duplicated.
 
 ## Advanced Usage
 

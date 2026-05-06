@@ -111,6 +111,24 @@ const CONFIG = {
   retryDelay: 1000, // Initial delay in milliseconds before first retry
   maxRetryDelay: 10000, // Maximum delay between retries (for exponential backoff)
   logLevel: "INFO", // DEBUG | INFO | WARNING | ERROR
+
+  //=============================================================================
+  // CURSOR-BASED PROCESSING - Controls incremental vs. catch-up scan behavior
+  //=============================================================================
+
+  // How many days back to initialize the cursor on the very first run.
+  // All threads with attachments from this many days ago onward will be (re-)scanned.
+  // Already-saved attachments are skipped via source_attachment_id dedup.
+  initialCursorDaysBack: 180,
+
+  // Size of the bounded time window used during historical catch-up.
+  // Each execution advances the cursor by this many days (when the window is not full).
+  cursorWindowDays: 3,
+
+  // Backward overlap applied in incremental mode (cursor near present).
+  // Threads with messages in the last N days are always re-checked, catching new
+  // replies in already-processed threads without per-thread state storage.
+  cursorWindowBufferDays: 7,
 };
 
 //=============================================================================
@@ -454,6 +472,75 @@ function releaseExecutionLock(userEmail) {
       logWithUser("Deleted invalid lock data");
     }
   }
+}
+
+/**
+ * Returns the per-user processing cursor as Unix epoch seconds.
+ * The cursor represents the newest thread date we have fully attempted.
+ * On first run, initializes to CONFIG.initialCursorDaysBack days ago.
+ *
+ * @param {string} userEmail
+ * @returns {number} Epoch seconds
+ */
+function getUserCursorState(userEmail) {
+  const emailKey = (userEmail || "").replace(/[^a-z0-9]/gi, "_");
+  const props = PropertiesService.getUserProperties();
+  const epochStr = props.getProperty(`CURSOR_${emailKey}`);
+  const offsetStr = props.getProperty(`CURSOR_OFFSET_${emailKey}`);
+  if (epochStr) {
+    return { epoch: parseInt(epochStr, 10), offset: parseInt(offsetStr || "0", 10) };
+  }
+  const initial = new Date();
+  initial.setDate(initial.getDate() - CONFIG.initialCursorDaysBack);
+  const epoch = Math.floor(initial.getTime() / 1000);
+  logWithUser(
+    `First run detected — cursor initialized to ${initial.toISOString()} (${CONFIG.initialCursorDaysBack} days back). Catch-up mode will run until cursor reaches present.`,
+    "INFO"
+  );
+  return { epoch, offset: 0 };
+}
+
+/**
+ * Persists the per-user processing cursor and pagination offset.
+ *
+ * @param {string} userEmail
+ * @param {number} epochSeconds
+ * @param {number} [offset=0] - Search pagination offset within the current window
+ */
+function setUserCursorState(userEmail, epochSeconds, offset = 0) {
+  const emailKey = (userEmail || "").replace(/[^a-z0-9]/gi, "_");
+  const props = PropertiesService.getUserProperties();
+  props.setProperty(`CURSOR_${emailKey}`, String(epochSeconds));
+  props.setProperty(`CURSOR_OFFSET_${emailKey}`, String(offset));
+  logWithUser(
+    `Cursor: epoch=${new Date(epochSeconds * 1000).toISOString()}, offset=${offset}`,
+    "INFO"
+  );
+}
+
+/**
+ * Resets the per-user processing cursor, triggering a full re-scan on the next run.
+ *
+ * Run this function directly from the Apps Script editor when you need to force
+ * reprocessing of historical email (e.g. after a misconfiguration or to recover
+ * attachments that were skipped). The next execution will reinitialize the cursor
+ * to CONFIG.initialCursorDaysBack days ago and begin catch-up mode.
+ *
+ * Already-saved attachments will not be duplicated — source_attachment_id dedup
+ * in saveAttachment detects and skips files that already exist in Drive.
+ *
+ * @param {string} [userEmail] - Defaults to the currently authenticated user.
+ */
+function resetUserCursor(userEmail) {
+  const email = userEmail || Session.getEffectiveUser().getEmail();
+  const emailKey = email.replace(/[^a-z0-9]/gi, "_");
+  const props = PropertiesService.getUserProperties();
+  props.deleteProperty(`CURSOR_${emailKey}`);
+  props.deleteProperty(`CURSOR_OFFSET_${emailKey}`);
+  logWithUser(
+    `Cursor reset for ${email}. Next run will start from ${CONFIG.initialCursorDaysBack} days ago.`,
+    "INFO"
+  );
 }
 
 /**
@@ -1612,9 +1699,13 @@ function getDomainFolder(sender, mainFolder) {
     // Use a lock to prevent race conditions when creating folders
     const lock = LockService.getScriptLock();
     try {
-      lock.tryLock(10000); // Wait up to 10 seconds for the lock
+      if (!lock.tryLock(10000)) {
+        throw new Error(
+          `Could not acquire lock for domain folder "${domain}" — skipping to avoid duplicates`
+        );
+      }
 
-      // First check if the folder exists
+      // Check if the folder exists
       const folders = withRetry(
         () => mainFolder.getFoldersByName(domain),
         "getting domain folder"
@@ -1624,30 +1715,30 @@ function getDomainFolder(sender, mainFolder) {
         const folder = folders.next();
         logWithUser(`Using existing domain folder: ${domain}`);
         return folder;
-      } else {
-        // Double-check that the folder still doesn't exist
-        // This helps in cases where another execution created it just now
-        const doubleCheckFolders = withRetry(
-          () => mainFolder.getFoldersByName(domain),
-          "double-checking domain folder"
-        );
-
-        if (doubleCheckFolders.hasNext()) {
-          const folder = doubleCheckFolders.next();
-          logWithUser(
-            `Using existing domain folder (after double-check): ${domain}`
-          );
-          return folder;
-        }
-
-        // If we're still here, we can safely create the folder
-        const newFolder = withRetry(
-          () => mainFolder.createFolder(domain),
-          "creating domain folder"
-        );
-        logWithUser(`Created new domain folder: ${domain}`);
-        return newFolder;
       }
+
+      // Brief pause to mitigate Drive eventual consistency before creating
+      Utilities.sleep(1000);
+
+      const foldersRecheck = withRetry(
+        () => mainFolder.getFoldersByName(domain),
+        "rechecking domain folder after delay"
+      );
+
+      if (foldersRecheck.hasNext()) {
+        const folder = foldersRecheck.next();
+        logWithUser(
+          `Using existing domain folder (after recheck): ${domain}`
+        );
+        return folder;
+      }
+
+      const newFolder = withRetry(
+        () => mainFolder.createFolder(domain),
+        "creating domain folder"
+      );
+      logWithUser(`Created new domain folder: ${domain}`);
+      return newFolder;
     } finally {
       // Always release the lock
       if (lock.hasLock()) {
@@ -1664,9 +1755,12 @@ function getDomainFolder(sender, mainFolder) {
     try {
       const lock = LockService.getScriptLock();
       try {
-        lock.tryLock(10000);
+        if (!lock.tryLock(10000)) {
+          throw new Error(
+            `Could not acquire lock for unknown folder — skipping to avoid duplicates`
+          );
+        }
 
-        // Check for unknown folder
         const unknownFolders = withRetry(
           () => mainFolder.getFoldersByName("unknown"),
           "getting unknown folder"
@@ -1676,29 +1770,29 @@ function getDomainFolder(sender, mainFolder) {
           const folder = unknownFolders.next();
           logWithUser(`Using fallback 'unknown' folder for ${sender}`);
           return folder;
-        } else {
-          // Double-check that the unknown folder still doesn't exist
-          const doubleCheckUnknown = withRetry(
-            () => mainFolder.getFoldersByName("unknown"),
-            "double-checking unknown folder"
-          );
-
-          if (doubleCheckUnknown.hasNext()) {
-            const folder = doubleCheckUnknown.next();
-            logWithUser(
-              `Using fallback 'unknown' folder (after double-check) for ${sender}`
-            );
-            return folder;
-          }
-
-          // Create the unknown folder
-          const newFolder = withRetry(
-            () => mainFolder.createFolder("unknown"),
-            "creating unknown folder"
-          );
-          logWithUser(`Created fallback 'unknown' folder for ${sender}`);
-          return newFolder;
         }
+
+        Utilities.sleep(1000);
+
+        const unknownRecheck = withRetry(
+          () => mainFolder.getFoldersByName("unknown"),
+          "rechecking unknown folder after delay"
+        );
+
+        if (unknownRecheck.hasNext()) {
+          const folder = unknownRecheck.next();
+          logWithUser(
+            `Using fallback 'unknown' folder (after recheck) for ${sender}`
+          );
+          return folder;
+        }
+
+        const newFolder = withRetry(
+          () => mainFolder.createFolder("unknown"),
+          "creating unknown folder"
+        );
+        logWithUser(`Created fallback 'unknown' folder for ${sender}`);
+        return newFolder;
       } finally {
         // Always release the lock
         if (lock.hasLock()) {
@@ -1953,25 +2047,76 @@ function processUserEmails(userEmail, oldestFirst = true, deadlineMs = null) {
     let permanentErrorLabel = getPermanentErrorLabel();
     let tooLargeLabel = getTooLargeLabel();
 
-    // Build search criteria using the processedLabelName from config
-    const searchCriteria =
-      `has:attachment -label:${CONFIG.processedLabelName}` +
-      ` -label:${CONFIG.permanentErrorLabelName}` +
-      ` -label:${CONFIG.tooLargeLabelName}`;
-    const pageSize = Math.max(1, CONFIG.batchSize);
-
-    // Single pagination cycle per execution to keep runtime predictable
-    const threads = GmailApp.search(searchCriteria, 0, pageSize);
+    // Cursor-based search replaces label-based filtering.
+    //
+    // Two modes depending on how far behind the cursor is:
+    //
+    //   Catch-up  (cursor older than bufferDays from now):
+    //     Bounded window [cursor, cursor + windowDays] so Gmail returns a
+    //     complete slice. Cursor advances by windowDays only when the window
+    //     yields fewer threads than batchSize (window is exhausted).
+    //
+    //   Incremental (cursor within bufferDays of now):
+    //     Open-ended window [now - bufferDays, ∞). Re-scans the recent window
+    //     on every run to catch new replies in already-processed threads.
+    //     Cursor advances to now after each successful batch.
+    //
+    // Gmail `after:` and `before:` accept Unix epoch seconds (no PST-midnight
+    // ambiguity that YYYY/MM/DD causes for non-PST users).
+    //
+    // source_attachment_id stored in Drive file descriptions provides fine-grained
+    // dedup: already-saved attachments are detected and skipped in O(1).
+    const now = Math.floor(Date.now() / 1000);
+    const { epoch: cursorEpoch, offset: cursorOffset } = getUserCursorState(userEmail);
+    const windowEndEpoch = cursorEpoch + CONFIG.cursorWindowDays * 86400;
+    const isIncremental = now - cursorEpoch <= CONFIG.cursorWindowBufferDays * 86400;
+    const daysBehind = Math.round((now - cursorEpoch) / 86400);
     logWithUser(
-      `Retrieved ${threads.length} threads from paginated search (offset=0, limit=${pageSize})`,
+      `Cursor: ${new Date(cursorEpoch * 1000).toISOString()} | offset=${cursorOffset} | ${daysBehind} days behind | Mode: ${isIncremental ? "incremental" : "catch-up"}`,
+      "INFO"
+    );
+
+    let searchCriteria;
+    if (isIncremental) {
+      const bufferEpoch = now - CONFIG.cursorWindowBufferDays * 86400;
+      searchCriteria =
+        `has:attachment after:${bufferEpoch}` +
+        ` -label:${CONFIG.permanentErrorLabelName}` +
+        ` -label:${CONFIG.tooLargeLabelName}`;
+      logWithUser(
+        `Incremental mode: scanning threads after ${new Date(bufferEpoch * 1000).toISOString()}`,
+        "INFO"
+      );
+    } else {
+      searchCriteria =
+        `has:attachment after:${cursorEpoch} before:${windowEndEpoch}` +
+        ` -label:${CONFIG.permanentErrorLabelName}` +
+        ` -label:${CONFIG.tooLargeLabelName}`;
+      logWithUser(
+        `Catch-up mode: window ${new Date(cursorEpoch * 1000).toISOString()} → ${new Date(windowEndEpoch * 1000).toISOString()}`,
+        "INFO"
+      );
+    }
+
+    const pageSize = Math.max(1, CONFIG.batchSize);
+    // In incremental mode the window is always open-ended so offset resets to 0.
+    const searchOffset = isIncremental ? 0 : cursorOffset;
+    const threads = GmailApp.search(searchCriteria, searchOffset, pageSize);
+    logWithUser(
+      `Retrieved ${threads.length} threads (limit=${pageSize}, incremental=${isIncremental})`,
       "INFO"
     );
 
     if (threads.length === 0) {
-      logWithUser(
-        "No unprocessed threads with attachments found, skipping processing",
-        "INFO"
-      );
+      if (!isIncremental) {
+        // Empty catch-up window (or offset past all results) → advance to next window
+        setUserCursorState(userEmail, windowEndEpoch, 0);
+        logWithUser(
+          `Empty catch-up window, cursor advanced to ${new Date(windowEndEpoch * 1000).toISOString()}`,
+          "INFO"
+        );
+      }
+      logWithUser("No threads with attachments found in current window", "INFO");
       return true;
     }
 
@@ -2024,6 +2169,17 @@ function processUserEmails(userEmail, oldestFirst = true, deadlineMs = null) {
         `Stopped early due to execution soft limit; remaining threads will continue in next run`,
         "WARNING"
       );
+    } else {
+      // Advance cursor only on full batch completion (not on timeout).
+      if (isIncremental) {
+        setUserCursorState(userEmail, now, 0);
+      } else if (threads.length < pageSize) {
+        // Catch-up window exhausted → move to next window, reset offset.
+        setUserCursorState(userEmail, windowEndEpoch, 0);
+      } else {
+        // Window has more threads than batchSize → advance offset to fetch next page.
+        setUserCursorState(userEmail, cursorEpoch, cursorOffset + pageSize);
+      }
     }
     return true;
   } catch (error) {
@@ -2097,14 +2253,10 @@ function processThreadsWithCounting(
     let threadId = null;
     let processingLabelApplied = false;
     try {
-      // Check if the thread is already processed
-      const threadLabels = thread.getLabels();
-      const isAlreadyProcessed = threadLabels.some(
-        (label) => label.getName() === processedLabel.getName()
-      );
-
-      if (!isAlreadyProcessed) {
-        threadId = thread.getId();
+      // Cursor-based search returns threads that may already have GDrive_Processed.
+      // We re-evaluate every thread in the window; source_attachment_id dedup in
+      // saveAttachment prevents re-saving files that already exist in Drive.
+      threadId = thread.getId();
         const previousFailure = getThreadFailureState(threadId);
         if (previousFailure && previousFailure.category === "permanent") {
           withRetry(
@@ -2432,7 +2584,6 @@ function processThreadsWithCounting(
             "INFO"
           );
         }
-      }
     } catch (error) {
       const failedThreadId = threadId || thread.getId();
       const failureState = registerThreadFailure(failedThreadId, {

@@ -93,4 +93,22 @@ const CONFIG = {
   retryDelay: 1000, // Initial delay in milliseconds before first retry
   maxRetryDelay: 10000, // Maximum delay between retries (for exponential backoff)
   logLevel: "INFO", // DEBUG | INFO | WARNING | ERROR
+
+  //=============================================================================
+  // CURSOR-BASED PROCESSING - Controls incremental vs. catch-up scan behavior
+  //=============================================================================
+
+  // How many days back to initialize the cursor on the very first run.
+  // All threads with attachments from this many days ago onward will be (re-)scanned.
+  // Already-saved attachments are skipped via source_attachment_id dedup.
+  initialCursorDaysBack: 180,
+
+  // Size of the bounded time window used during historical catch-up.
+  // Each execution advances the cursor by this many days (when the window is not full).
+  cursorWindowDays: 3,
+
+  // Backward overlap applied in incremental mode (cursor near present).
+  // Threads with messages in the last N days are always re-checked, catching new
+  // replies in already-processed threads without per-thread state storage.
+  cursorWindowBufferDays: 7,
 };

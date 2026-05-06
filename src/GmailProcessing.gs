@@ -70,25 +70,76 @@ function processUserEmails(userEmail, oldestFirst = true, deadlineMs = null) {
     let permanentErrorLabel = getPermanentErrorLabel();
     let tooLargeLabel = getTooLargeLabel();
 
-    // Build search criteria using the processedLabelName from config
-    const searchCriteria =
-      `has:attachment -label:${CONFIG.processedLabelName}` +
-      ` -label:${CONFIG.permanentErrorLabelName}` +
-      ` -label:${CONFIG.tooLargeLabelName}`;
-    const pageSize = Math.max(1, CONFIG.batchSize);
-
-    // Single pagination cycle per execution to keep runtime predictable
-    const threads = GmailApp.search(searchCriteria, 0, pageSize);
+    // Cursor-based search replaces label-based filtering.
+    //
+    // Two modes depending on how far behind the cursor is:
+    //
+    //   Catch-up  (cursor older than bufferDays from now):
+    //     Bounded window [cursor, cursor + windowDays] so Gmail returns a
+    //     complete slice. Cursor advances by windowDays only when the window
+    //     yields fewer threads than batchSize (window is exhausted).
+    //
+    //   Incremental (cursor within bufferDays of now):
+    //     Open-ended window [now - bufferDays, ∞). Re-scans the recent window
+    //     on every run to catch new replies in already-processed threads.
+    //     Cursor advances to now after each successful batch.
+    //
+    // Gmail `after:` and `before:` accept Unix epoch seconds (no PST-midnight
+    // ambiguity that YYYY/MM/DD causes for non-PST users).
+    //
+    // source_attachment_id stored in Drive file descriptions provides fine-grained
+    // dedup: already-saved attachments are detected and skipped in O(1).
+    const now = Math.floor(Date.now() / 1000);
+    const { epoch: cursorEpoch, offset: cursorOffset } = getUserCursorState(userEmail);
+    const windowEndEpoch = cursorEpoch + CONFIG.cursorWindowDays * 86400;
+    const isIncremental = now - cursorEpoch <= CONFIG.cursorWindowBufferDays * 86400;
+    const daysBehind = Math.round((now - cursorEpoch) / 86400);
     logWithUser(
-      `Retrieved ${threads.length} threads from paginated search (offset=0, limit=${pageSize})`,
+      `Cursor: ${new Date(cursorEpoch * 1000).toISOString()} | offset=${cursorOffset} | ${daysBehind} days behind | Mode: ${isIncremental ? "incremental" : "catch-up"}`,
+      "INFO"
+    );
+
+    let searchCriteria;
+    if (isIncremental) {
+      const bufferEpoch = now - CONFIG.cursorWindowBufferDays * 86400;
+      searchCriteria =
+        `has:attachment after:${bufferEpoch}` +
+        ` -label:${CONFIG.permanentErrorLabelName}` +
+        ` -label:${CONFIG.tooLargeLabelName}`;
+      logWithUser(
+        `Incremental mode: scanning threads after ${new Date(bufferEpoch * 1000).toISOString()}`,
+        "INFO"
+      );
+    } else {
+      searchCriteria =
+        `has:attachment after:${cursorEpoch} before:${windowEndEpoch}` +
+        ` -label:${CONFIG.permanentErrorLabelName}` +
+        ` -label:${CONFIG.tooLargeLabelName}`;
+      logWithUser(
+        `Catch-up mode: window ${new Date(cursorEpoch * 1000).toISOString()} → ${new Date(windowEndEpoch * 1000).toISOString()}`,
+        "INFO"
+      );
+    }
+
+    const pageSize = Math.max(1, CONFIG.batchSize);
+    // In incremental mode the window is always open-ended so offset resets to 0.
+    const searchOffset = isIncremental ? 0 : cursorOffset;
+    const threads = GmailApp.search(searchCriteria, searchOffset, pageSize);
+    logWithUser(
+      `Retrieved ${threads.length} threads (limit=${pageSize}, incremental=${isIncremental})`,
       "INFO"
     );
 
     if (threads.length === 0) {
-      logWithUser(
-        "No unprocessed threads with attachments found, skipping processing",
-        "INFO"
-      );
+      if (!isIncremental) {
+        // Empty catch-up window (or offset past all results) → advance to next window
+        setUserCursorState(userEmail, windowEndEpoch, 0);
+        logWithUser(
+          `Empty catch-up window, cursor advanced to ${new Date(windowEndEpoch * 1000).toISOString()}`,
+          "INFO"
+        );
+      }
+      logWithUser("No threads with attachments found in current window", "INFO");
       return true;
     }
 
@@ -141,6 +192,17 @@ function processUserEmails(userEmail, oldestFirst = true, deadlineMs = null) {
         `Stopped early due to execution soft limit; remaining threads will continue in next run`,
         "WARNING"
       );
+    } else {
+      // Advance cursor only on full batch completion (not on timeout).
+      if (isIncremental) {
+        setUserCursorState(userEmail, now, 0);
+      } else if (threads.length < pageSize) {
+        // Catch-up window exhausted → move to next window, reset offset.
+        setUserCursorState(userEmail, windowEndEpoch, 0);
+      } else {
+        // Window has more threads than batchSize → advance offset to fetch next page.
+        setUserCursorState(userEmail, cursorEpoch, cursorOffset + pageSize);
+      }
     }
     return true;
   } catch (error) {
@@ -214,14 +276,10 @@ function processThreadsWithCounting(
     let threadId = null;
     let processingLabelApplied = false;
     try {
-      // Check if the thread is already processed
-      const threadLabels = thread.getLabels();
-      const isAlreadyProcessed = threadLabels.some(
-        (label) => label.getName() === processedLabel.getName()
-      );
-
-      if (!isAlreadyProcessed) {
-        threadId = thread.getId();
+      // Cursor-based search returns threads that may already have GDrive_Processed.
+      // We re-evaluate every thread in the window; source_attachment_id dedup in
+      // saveAttachment prevents re-saving files that already exist in Drive.
+      threadId = thread.getId();
         const previousFailure = getThreadFailureState(threadId);
         if (previousFailure && previousFailure.category === "permanent") {
           withRetry(
@@ -549,7 +607,6 @@ function processThreadsWithCounting(
             "INFO"
           );
         }
-      }
     } catch (error) {
       const failedThreadId = threadId || thread.getId();
       const failureState = registerThreadFailure(failedThreadId, {
