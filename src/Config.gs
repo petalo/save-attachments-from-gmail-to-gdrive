@@ -17,7 +17,6 @@ const CONFIG = {
 
   // Gmail label applied to threads after processing
   // This prevents the same emails from being processed multiple times
-  processedLabelName: "GDrive_Processed",
   processingLabelName: "GDrive_Processing",
   errorLabelName: "GDrive_Error",
   permanentErrorLabelName: "GDrive_Error_Permanent",

@@ -19,29 +19,25 @@ function validateConfig() {
   }
 
   if (
-    !CONFIG.processedLabelName ||
     !CONFIG.processingLabelName ||
     !CONFIG.errorLabelName ||
     !CONFIG.permanentErrorLabelName ||
     !CONFIG.tooLargeLabelName
   ) {
     throw new Error(
-      "Configuration error: processedLabelName, processingLabelName, errorLabelName, permanentErrorLabelName, and tooLargeLabelName must all be set."
+      "Configuration error: processingLabelName, errorLabelName, permanentErrorLabelName, and tooLargeLabelName must all be set."
     );
   }
 
   const labelNames = [
-    CONFIG.processedLabelName,
     CONFIG.processingLabelName,
     CONFIG.errorLabelName,
     CONFIG.permanentErrorLabelName,
     CONFIG.tooLargeLabelName,
   ];
-  if (
-    new Set(labelNames).size !== labelNames.length
-  ) {
+  if (new Set(labelNames).size !== labelNames.length) {
     throw new Error(
-      "Configuration error: processedLabelName, processingLabelName, errorLabelName, permanentErrorLabelName, and tooLargeLabelName must be different."
+      "Configuration error: processingLabelName, errorLabelName, permanentErrorLabelName, and tooLargeLabelName must be different."
     );
   }
 

@@ -35,7 +35,6 @@ const CONFIG = {
 
   // Gmail label applied to threads after processing
   // This prevents the same emails from being processed multiple times
-  processedLabelName: "GDrive_Processed",
   processingLabelName: "GDrive_Processing",
   errorLabelName: "GDrive_Error",
   permanentErrorLabelName: "GDrive_Error_Permanent",
@@ -1094,19 +1093,10 @@ function getOrCreateLabel(labelName) {
     label = GmailApp.createLabel(labelName);
     logWithUser(`Created new Gmail label: ${labelName}`);
   } else {
-    logWithUser(`Using existing Gmail label: ${labelName}`);
+    logWithUser(`Using existing Gmail label: ${labelName}`, "DEBUG");
   }
 
   return label;
-}
-
-/**
- * Gets or creates the processed label
- *
- * @returns {GmailLabel} The Gmail label used to mark processed threads
- */
-function getProcessedLabel() {
-  return getOrCreateLabel(CONFIG.processedLabelName);
 }
 
 /**
@@ -1226,7 +1216,7 @@ function getThreadProcessingState(threadId) {
  */
 function recoverStaleProcessingThreads(userEmail, deadlineMs = null) {
   const processingLabel = getProcessingLabel();
-  const searchCriteria = `label:${CONFIG.processingLabelName} -label:${CONFIG.processedLabelName}`;
+  const searchCriteria = `label:${CONFIG.processingLabelName}`;
   const pageSize = Math.max(1, CONFIG.staleRecoveryBatchSize || CONFIG.batchSize);
   const staleThresholdMs =
     Math.max(1, CONFIG.processingStateTtlMinutes) * 60 * 1000;
@@ -2041,7 +2031,6 @@ function processUserEmails(userEmail, oldestFirst = true, deadlineMs = null) {
     }
 
     // Get or create processing state labels
-    let processedLabel = getProcessedLabel();
     let processingLabel = getProcessingLabel();
     let errorLabel = getErrorLabel();
     let permanentErrorLabel = getPermanentErrorLabel();
@@ -2149,7 +2138,6 @@ function processUserEmails(userEmail, oldestFirst = true, deadlineMs = null) {
     const result = processThreadsWithCounting(
       threads,
       mainFolder,
-      processedLabel,
       processingLabel,
       errorLabel,
       permanentErrorLabel,
@@ -2200,7 +2188,6 @@ function processUserEmails(userEmail, oldestFirst = true, deadlineMs = null) {
  *
  * @param {GmailThread[]} threads - Gmail threads to process
  * @param {DriveFolder} mainFolder - The main folder to save attachments to
- * @param {GmailLabel} processedLabel - The label to apply to processed threads
  * @param {GmailLabel} processingLabel - The label to apply while processing
  * @param {GmailLabel} errorLabel - The label to apply on processing failure
  * @param {GmailLabel} permanentErrorLabel - The label for non-retriable failures
@@ -2225,7 +2212,6 @@ function processUserEmails(userEmail, oldestFirst = true, deadlineMs = null) {
 function processThreadsWithCounting(
   threads,
   mainFolder,
-  processedLabel,
   processingLabel,
   errorLabel,
   permanentErrorLabel,
@@ -2253,9 +2239,6 @@ function processThreadsWithCounting(
     let threadId = null;
     let processingLabelApplied = false;
     try {
-      // Cursor-based search returns threads that may already have GDrive_Processed.
-      // We re-evaluate every thread in the window; source_attachment_id dedup in
-      // saveAttachment prevents re-saving files that already exist in Drive.
       threadId = thread.getId();
         const previousFailure = getThreadFailureState(threadId);
         if (previousFailure && previousFailure.category === "permanent") {
@@ -2500,10 +2483,6 @@ function processThreadsWithCounting(
         // 2. Thread had attachments but none were valid, and no too-large items
         if (threadProcessed && !threadHadSaveFailures && !threadHasTooLargeAttachments) {
           withRetry(
-            () => thread.addLabel(processedLabel),
-            "adding processed label"
-          );
-          withRetry(
             () => thread.removeLabel(errorLabel),
             "removing error label after successful processing"
           );
@@ -2526,10 +2505,6 @@ function processThreadsWithCounting(
           !threadHasTooLargeAttachments
         ) {
           withRetry(
-            () => thread.addLabel(processedLabel),
-            "adding processed label"
-          );
-          withRetry(
             () => thread.removeLabel(errorLabel),
             "removing error label after filtered processing"
           );
@@ -2543,7 +2518,7 @@ function processThreadsWithCounting(
           );
           clearThreadFailureState(threadId);
           logWithUser(
-            `Thread "${threadSubject}" had attachments but none were valid; marked as processed`,
+            `Thread "${threadSubject}" had attachments but none were valid; skipped`,
             "INFO"
           );
         } else if (threadHadValidAttachments && threadHadSaveFailures) {
@@ -2646,133 +2621,6 @@ function processThreadsWithCounting(
   return { threadsWithAttachments, processedThreads, stoppedByDeadline };
 }
 
-/**
- * Process the messages in a thread, saving attachments if any
- *
- * @param {GmailThread} thread - The Gmail thread to process
- * @param {GmailLabel} processedLabel - The label to apply to processed threads
- * @param {DriveFolder} mainFolder - The main Google Drive folder
- * @returns {Object} Processing results with counts of processed attachments
- *
- * The function follows this flow:
- * 1. Retrieves all messages in the thread
- * 2. For each message:
- *    - Gets all attachments and filters out those that should be skipped
- *    - Extracts the sender's domain to determine the target folder
- *    - Creates or uses an existing domain folder
- *    - Saves each valid attachment to the appropriate folder
- *    - Tracks statistics (saved, duplicates, errors, etc.)
- * 3. Applies the processed label to the thread regardless of outcome
- * 4. Returns a detailed result object with processing statistics
- *
- * This function is used by processThreadsWithCounting but provides more detailed
- * statistics about the processing results.
- */
-function processMessages(thread, processedLabel, mainFolder) {
-  try {
-    const messages = thread.getMessages();
-    const threadId = thread.getId();
-    let result = {
-      totalAttachments: 0,
-      savedAttachments: 0,
-      savedSize: 0,
-      skippedAttachments: 0,
-      errors: 0,
-      duplicates: 0,
-    };
-
-    for (const message of messages) {
-      try {
-        const messageId = message.getId();
-        const attachments = message.getAttachments();
-        const validAttachments = attachments.filter(
-          (att) => !shouldSkipFile(att.getName(), att.getSize(), att)
-        );
-
-        if (validAttachments.length === 0) {
-          continue; // Skip messages with no valid attachments
-        }
-
-        // Get sender details
-        const sender = message.getFrom();
-        const domain = extractDomain(sender);
-
-        // Get or create domain folder
-        const domainFolder = getDomainFolder(sender, mainFolder);
-
-        if (!domainFolder) {
-          logWithUser(
-            `Error: Could not find or create folder for domain ${domain}`,
-            "ERROR"
-          );
-          result.errors++;
-          continue;
-        }
-
-        result.totalAttachments += validAttachments.length;
-
-        // Process each valid attachment
-        for (let attachmentIndex = 0; attachmentIndex < validAttachments.length; attachmentIndex++) {
-          const attachment = validAttachments[attachmentIndex];
-          const sourceAttachmentId = buildSourceAttachmentId(
-            threadId,
-            messageId,
-            attachmentIndex,
-            attachment
-          );
-
-          // Save to domain folder
-          const saveResult = saveAttachment(attachment, message, domainFolder, {
-            sourceAttachmentId: `${sourceAttachmentId}:domain`,
-          });
-
-          if (saveResult.success) {
-            if (saveResult.duplicate) {
-              result.duplicates++;
-            } else {
-              result.savedAttachments++;
-              result.savedSize += attachment.getSize();
-            }
-          } else {
-            result.skippedAttachments++;
-            result.errors++;
-          }
-        }
-      } catch (messageError) {
-        logWithUser(
-          `Error processing message: ${messageError.message}`,
-          "ERROR"
-        );
-        result.errors++;
-      }
-    }
-
-    // Apply the processed label only when safe:
-    // - no errors during valid-attachment saving, or
-    // - there were no valid attachments to save
-    if (result.errors === 0 || result.totalAttachments === 0) {
-      thread.addLabel(processedLabel);
-    } else {
-      logWithUser(
-        `Thread "${thread.getFirstMessageSubject()}" had save errors; not marked as processed`,
-        "WARNING"
-      );
-    }
-
-    // Log a summary for the thread if it had attachments
-    if (result.totalAttachments > 0) {
-      logWithUser(
-        `Thread processed: ${result.savedAttachments} saved, ${result.duplicates} duplicates, ${result.skippedAttachments} skipped`,
-        "INFO"
-      );
-    }
-
-    return result;
-  } catch (error) {
-    logWithUser(`Error in processMessages: ${error.message}`, "ERROR");
-    throw error;
-  }
-}
 
 //=============================================================================
 // MAIN - MAIN FUNCTIONS
@@ -2792,29 +2640,25 @@ function validateConfig() {
   }
 
   if (
-    !CONFIG.processedLabelName ||
     !CONFIG.processingLabelName ||
     !CONFIG.errorLabelName ||
     !CONFIG.permanentErrorLabelName ||
     !CONFIG.tooLargeLabelName
   ) {
     throw new Error(
-      "Configuration error: processedLabelName, processingLabelName, errorLabelName, permanentErrorLabelName, and tooLargeLabelName must all be set."
+      "Configuration error: processingLabelName, errorLabelName, permanentErrorLabelName, and tooLargeLabelName must all be set."
     );
   }
 
   const labelNames = [
-    CONFIG.processedLabelName,
     CONFIG.processingLabelName,
     CONFIG.errorLabelName,
     CONFIG.permanentErrorLabelName,
     CONFIG.tooLargeLabelName,
   ];
-  if (
-    new Set(labelNames).size !== labelNames.length
-  ) {
+  if (new Set(labelNames).size !== labelNames.length) {
     throw new Error(
-      "Configuration error: processedLabelName, processingLabelName, errorLabelName, permanentErrorLabelName, and tooLargeLabelName must be different."
+      "Configuration error: processingLabelName, errorLabelName, permanentErrorLabelName, and tooLargeLabelName must be different."
     );
   }
 

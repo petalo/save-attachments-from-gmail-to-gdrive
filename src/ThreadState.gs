@@ -85,7 +85,7 @@ function getThreadProcessingState(threadId) {
  */
 function recoverStaleProcessingThreads(userEmail, deadlineMs = null) {
   const processingLabel = getProcessingLabel();
-  const searchCriteria = `label:${CONFIG.processingLabelName} -label:${CONFIG.processedLabelName}`;
+  const searchCriteria = `label:${CONFIG.processingLabelName}`;
   const pageSize = Math.max(1, CONFIG.staleRecoveryBatchSize || CONFIG.batchSize);
   const staleThresholdMs =
     Math.max(1, CONFIG.processingStateTtlMinutes) * 60 * 1000;

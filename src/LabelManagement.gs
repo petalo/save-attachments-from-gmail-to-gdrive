@@ -15,19 +15,10 @@ function getOrCreateLabel(labelName) {
     label = GmailApp.createLabel(labelName);
     logWithUser(`Created new Gmail label: ${labelName}`);
   } else {
-    logWithUser(`Using existing Gmail label: ${labelName}`);
+    logWithUser(`Using existing Gmail label: ${labelName}`, "DEBUG");
   }
 
   return label;
-}
-
-/**
- * Gets or creates the processed label
- *
- * @returns {GmailLabel} The Gmail label used to mark processed threads
- */
-function getProcessedLabel() {
-  return getOrCreateLabel(CONFIG.processedLabelName);
 }
 
 /**

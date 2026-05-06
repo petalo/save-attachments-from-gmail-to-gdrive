@@ -46,7 +46,7 @@ function getConfig() {
  * @returns {Object} Information about matching threads
  */
 function diagnoseMissingEmails() {
-  const searchCriteria = `has:attachment -label:${CONFIG.processedLabelName}`;
+  const searchCriteria = `has:attachment`;
   const searchCriteriaWithOrder = searchCriteria + " older_first";
 
   // Search without limit to get all matching threads
@@ -85,27 +85,15 @@ function diagnoseMissingEmails() {
  * @returns {Object} Query counts by variation
  */
 function diagnoseSearchVariations() {
-  const searchCriteria = `has:attachment -label:${CONFIG.processedLabelName}`;
+  const searchCriteria = `has:attachment`;
   const variations = [
     { name: "Standard", query: searchCriteria },
     { name: "In Inbox", query: `in:inbox ${searchCriteria}` },
-    {
-      name: "With quote",
-      query: `has:attachment -label:\"${CONFIG.processedLabelName}\"`,
-    },
-    {
-      name: "With parentheses",
-      query: `has:attachment AND -(label:${CONFIG.processedLabelName})`,
-    },
-    {
-      name: "Explicit attachment",
-      query: `filename:* -label:${CONFIG.processedLabelName}`,
-    },
+    { name: "Explicit attachment", query: `filename:*` },
   ];
 
   const result = {
     checkedAt: new Date().toISOString(),
-    processedLabelName: CONFIG.processedLabelName,
     variations: [],
   };
 
@@ -158,22 +146,6 @@ function basicGmailDiagnostic() {
       }
     }
 
-    // Test if our label exists and works
-    const labelName = CONFIG.processedLabelName;
-    const label = GmailApp.getUserLabelByName(labelName);
-
-    if (label) {
-      Logger.log(`Found label ${labelName} - it exists`);
-      // Try searching with this label specifically
-      const labelSearch = `has:attachment label:${labelName}`;
-      const labelThreads = GmailApp.search(labelSearch, 0, 10);
-      Logger.log(
-        `Found ${labelThreads.length} threads with label ${labelName}`
-      );
-    } else {
-      Logger.log(`Label ${labelName} does not exist yet`);
-    }
-
     return {
       searchAccess: true,
       totalAttachmentThreads: threads.length,
@@ -193,7 +165,7 @@ function basicGmailDiagnostic() {
  * focusing on looking for a mismatch between search and actual processing
  */
 function detailedGmailDiagnostic() {
-  const searchCriteria = `has:attachment -label:${CONFIG.processedLabelName}`;
+  const searchCriteria = `has:attachment`;
   const results = {
     tests: {},
     details: [],
@@ -402,63 +374,6 @@ function diagnoseAttachmentDiscrepancy() {
   }
 }
 
-/**
- * Fix utility to manually remove processed labels from threads that don't have attachments
- * This helps clean up mislabeled threads
- */
-function cleanupMislabeledThreads() {
-  const labelName = CONFIG.processedLabelName;
-  const label = GmailApp.getUserLabelByName(labelName);
-
-  if (!label) {
-    logWithUser(`Label ${labelName} does not exist yet`, "INFO");
-    return { cleaned: 0 };
-  }
-
-  // Get threads with the processed label
-  const labeledThreads = GmailApp.search(`label:${labelName}`, 0, 50);
-  logWithUser(
-    `Found ${labeledThreads.length} threads with the ${labelName} label`,
-    "INFO"
-  );
-
-  let removedCount = 0;
-
-  for (let i = 0; i < labeledThreads.length; i++) {
-    const thread = labeledThreads[i];
-    const messages = thread.getMessages();
-    let hasRealAttachments = false;
-
-    // Check each message in the thread
-    for (let j = 0; j < messages.length; j++) {
-      const message = messages[j];
-      const attachments = message.getAttachments({
-        includeInlineImages: false,
-      });
-
-      if (attachments.length > 0) {
-        hasRealAttachments = true;
-        break;
-      }
-    }
-
-    // If this thread has no real attachments but has the label, remove the label
-    if (!hasRealAttachments) {
-      thread.removeLabel(label);
-      removedCount++;
-      logWithUser(
-        `Removed label from thread: ${thread.getFirstMessageSubject()} (no real attachments)`,
-        "INFO"
-      );
-    }
-  }
-
-  logWithUser(
-    `Removed ${labelName} label from ${removedCount} threads that had no real attachments`,
-    "INFO"
-  );
-  return { cleaned: removedCount };
-}
 
 /**
  * Tests the file timestamp functionality
