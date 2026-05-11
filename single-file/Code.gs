@@ -1833,8 +1833,9 @@ function buildAttachmentMetadata(emailDate, sourceAttachmentId) {
 function findFileBySourceId(sourceAttachmentId, folder) {
   if (!sourceAttachmentId) return null;
   try {
+    const escapedId = sourceAttachmentId.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     const results = DriveApp.searchFiles(
-      `'${folder.getId()}' in parents and description contains 'source_attachment_id=${sourceAttachmentId}'`
+      `'${folder.getId()}' in parents and description contains 'source_attachment_id=${escapedId}'`
     );
     return results.hasNext() ? results.next() : null;
   } catch (e) {
@@ -1867,30 +1868,33 @@ function findFileBySourceId(sourceAttachmentId, folder) {
 function saveAttachment(attachment, message, domainFolder, options = {}) {
   try {
     const attachmentName = attachment.getName();
-    const attachmentSize = Math.round(attachment.getSize() / 1024);
+    const attachmentBytes = attachment.getSize();
     const sourceAttachmentId = options.sourceAttachmentId || null;
     const emailDate = message.getDate();
 
     logWithUser(
-      `Processing attachment: ${attachmentName} (${attachmentSize}KB)`,
+      `Processing attachment: ${attachmentName} (${Math.round(attachmentBytes / 1024)}KB)`,
       "DEBUG"
     );
     logWithUser(`Email date: ${emailDate.toISOString()}`, "DEBUG");
 
     // --- Stage 1: filename + size match (fast path) ---
     const existingFiles = domainFolder.getFilesByName(attachmentName);
-    if (existingFiles.hasNext()) {
+    let nameCollision = false;
+    while (existingFiles.hasNext()) {
+      nameCollision = true;
       const existingFile = existingFiles.next();
-      const existingFileSize = Math.round(existingFile.getSize() / 1024);
 
-      if (existingFileSize === attachmentSize) {
+      if (existingFile.getSize() === attachmentBytes) {
         logWithUser(
           `Duplicate detected by name+size: ${attachmentName}`,
           "INFO"
         );
         return { success: true, duplicate: true, file: existingFile };
       }
+    }
 
+    if (nameCollision) {
       // Name collision (same name, different size): check if this exact
       // attachment was already saved under a renamed filename.
       const renamedFile = findFileBySourceId(sourceAttachmentId, domainFolder);
