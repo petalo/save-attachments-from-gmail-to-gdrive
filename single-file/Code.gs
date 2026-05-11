@@ -1833,9 +1833,14 @@ function buildAttachmentMetadata(emailDate, sourceAttachmentId) {
 function findFileBySourceId(sourceAttachmentId, folder) {
   if (!sourceAttachmentId) return null;
   try {
-    const escapedId = sourceAttachmentId.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    // Search by the safe prefix (threadId:messageId:attachmentIndex) only.
+    // The filename portion can contain characters that break Drive query syntax
+    // (e.g. "[" in "image[44].png" is a Lucene range operator). The first three
+    // colon-separated segments are always hex Gmail IDs + an integer index, so
+    // they are guaranteed to be query-safe and unique per attachment position.
+    const safePrefix = sourceAttachmentId.split(":").slice(0, 3).join(":") + ":";
     const results = DriveApp.searchFiles(
-      `'${folder.getId()}' in parents and description contains 'source_attachment_id=${escapedId}'`
+      `'${folder.getId()}' in parents and description contains 'source_attachment_id=${safePrefix}'`
     );
     return results.hasNext() ? results.next() : null;
   } catch (e) {
