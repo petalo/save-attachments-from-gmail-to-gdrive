@@ -2071,8 +2071,12 @@ function processUserEmails(userEmail, oldestFirst = true, deadlineMs = null) {
     );
 
     if (threads.length === 0) {
-      if (!isIncremental) {
-        // Empty catch-up window (or offset past all results) → advance to next window
+      if (isIncremental) {
+        // Offset past all results in the incremental window → reset to now.
+        setUserCursorState(userEmail, now, 0);
+        logWithUser("Incremental window exhausted, cursor reset to now", "INFO");
+      } else {
+        // Empty catch-up window → advance to next window.
         setUserCursorState(userEmail, windowEndEpoch, 0);
         logWithUser(
           `Empty catch-up window, cursor advanced to ${new Date(windowEndEpoch * 1000).toISOString()}`,
