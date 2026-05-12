@@ -442,7 +442,7 @@ function processThreadsWithCounting(
                   // and then by source_attachment_id in the file description — the folderId scope
                   // differs per domain folder, so each domain copy is checked independently.
                   const saveResult = saveAttachment(attachment, message, domainFolder, {
-                    sourceAttachmentId: `${sourceAttachmentId}:domain`,
+                    sourceAttachmentId,
                   });
 
                   // Process the result object

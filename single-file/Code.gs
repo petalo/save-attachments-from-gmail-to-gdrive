@@ -1840,20 +1840,31 @@ function findFileBySourceId(sourceAttachmentId, folder) {
     const parts = sourceAttachmentId.split(":");
     const threadId = parts[0];
     const safePrefix = parts.slice(0, 3).join(":") + ":";
-    const results = DriveApp.searchFiles(
-      `'${folder.getId()}' in parents and description contains 'source_attachment_id=${threadId}'`
+    const query = `'${folder.getId()}' in parents and description contains 'source_attachment_id=${threadId}'`;
+    logWithUser(
+      `findFileBySourceId: rawId=${sourceAttachmentId} | threadId=${threadId} | safePrefix=${safePrefix} | query=${query}`,
+      "DEBUG"
     );
+    const results = DriveApp.searchFiles(query);
+    let candidatesChecked = 0;
     while (results.hasNext()) {
       const file = results.next();
+      candidatesChecked++;
       const desc = file.getDescription() || "";
+      logWithUser(
+        `findFileBySourceId: candidate[${candidatesChecked}] name=${file.getName()} desc=${desc.substring(0, 120)}`,
+        "DEBUG"
+      );
       if (desc.includes(`source_attachment_id=${safePrefix}`)) {
+        logWithUser(`findFileBySourceId: matched candidate[${candidatesChecked}]`, "DEBUG");
         return file;
       }
     }
+    logWithUser(`findFileBySourceId: no match after ${candidatesChecked} candidates`, "DEBUG");
     return null;
   } catch (e) {
     logWithUser(
-      `findFileBySourceId: Drive search failed: ${e.message}`,
+      `findFileBySourceId: Drive search failed: ${e.message} | rawId=${sourceAttachmentId}`,
       "WARNING"
     );
     return null;
@@ -2426,7 +2437,7 @@ function processThreadsWithCounting(
                   // and then by source_attachment_id in the file description — the folderId scope
                   // differs per domain folder, so each domain copy is checked independently.
                   const saveResult = saveAttachment(attachment, message, domainFolder, {
-                    sourceAttachmentId: `${sourceAttachmentId}:domain`,
+                    sourceAttachmentId,
                   });
 
                   // Process the result object
