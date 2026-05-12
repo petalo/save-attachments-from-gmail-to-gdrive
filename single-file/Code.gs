@@ -9,8 +9,6 @@
  * Key features:
  * - Automatic organization by sender domain
  * - Configurable filters for file types and sizes
- * - Multiple invoice detection methods (AI-powered and email-based)
- * - Privacy-focused metadata analysis for invoice detection
  * - Scheduled processing via time-based triggers
  * - Multi-user support with permission management
  * - Robust error handling with retry logic
