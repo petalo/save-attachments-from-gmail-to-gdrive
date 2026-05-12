@@ -23,25 +23,29 @@ function buildAttachmentMetadata(emailDate, sourceAttachmentId) {
 /**
  * Builds a deterministic renamed filename for name-collision cases.
  *
- * Appends a stable suffix derived from the first 8 hex chars of threadId and
- * messageId, plus the attachment index. This makes the renamed filename
- * deterministic across runs, so Stage 1 (getFilesByName) can detect it on
- * re-scans without any Drive query.
+ * Appends a stable suffix derived from the first 8 hex chars of threadId,
+ * attachment index, and byte size. Deliberately omits messageId so that
+ * identical content appearing in multiple messages of the same thread
+ * (e.g. inline signature images) always maps to the same filename and is
+ * detected as a duplicate by getFilesByName on subsequent runs.
  *
- * Example: "image.png" + "19c4c18a31097bda:19cb54ff...:0:..." → "image__19c4c18a_19cb54ff_0.png"
+ * Example: "image.png" (101569 bytes, index 0, thread 19c4c18a…)
+ *          → "image__19c4c18a_0_101569.png"
  *
  * Fallback (no sourceAttachmentId): timestamp suffix (previous behaviour).
  *
  * @param {string} attachmentName - Original attachment filename
  * @param {string|null} sourceAttachmentId - Full attachment ID (threadId:msgId:index:...)
+ * @param {number} attachmentBytes - Exact byte size of the attachment
  * @returns {string} Renamed filename
  */
-function buildStableRename(attachmentName, sourceAttachmentId) {
+function buildStableRename(attachmentName, sourceAttachmentId, attachmentBytes) {
   let suffix;
   if (sourceAttachmentId) {
     const parts = sourceAttachmentId.split(":");
     if (parts.length >= 3) {
-      suffix = `${parts[0].slice(0, 8)}_${parts[1].slice(0, 8)}_${parts[2]}`;
+      // threadId (8 hex) + attachmentIndex + size — unique per (thread, slot, content)
+      suffix = `${parts[0].slice(0, 8)}_${parts[2]}_${attachmentBytes}`;
     }
   }
   if (!suffix) {
@@ -107,7 +111,7 @@ function saveAttachment(attachment, message, domainFolder, options = {}) {
       // Same name, different size: a different attachment already holds that
       // filename. Check whether THIS attachment was already saved under its
       // stable renamed filename (deterministic from sourceAttachmentId).
-      const stableName = buildStableRename(attachmentName, sourceAttachmentId);
+      const stableName = buildStableRename(attachmentName, sourceAttachmentId, attachmentBytes);
       const stableFiles = domainFolder.getFilesByName(stableName);
       if (stableFiles.hasNext()) {
         const existingRenamed = stableFiles.next();
