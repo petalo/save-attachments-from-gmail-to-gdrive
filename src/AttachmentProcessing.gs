@@ -4,8 +4,8 @@
 
 /**
  * Builds description metadata to persist source linkage in the Drive file.
- * The source_attachment_id field is the primary dedup key across runs,
- * including renamed files.
+ * Stored for human readability; NOT used for dedup search (description is
+ * not a valid Drive API query field — use custom properties instead).
  *
  * @param {Date} emailDate - Original email date
  * @param {string|null} sourceAttachmentId - Deterministic source attachment ID
@@ -20,9 +20,35 @@ function buildAttachmentMetadata(emailDate, sourceAttachmentId) {
 }
 
 /**
- * Searches a Drive folder for a file whose description contains the given
- * sourceAttachmentId. Used as a fallback dedup check for files that were
- * renamed due to name collisions in a previous run.
+ * Stamps a saved Drive file with two custom properties so future runs can
+ * locate it via a queryable Drive property search:
+ *   sid_th  — the threadId (hex, colon-free) used as the Drive query term
+ *   sid_pre — the "threadId:msgId:index:" prefix used for in-memory matching
+ *
+ * Drive's `description contains` query is NOT a valid query field (v3 API),
+ * but `properties has { key='K' and value='V' }` IS supported.
+ *
+ * @param {DriveFile} file - The Drive file to annotate
+ * @param {string|null} sourceAttachmentId - Full attachment ID
+ */
+function setSourceProperties(file, sourceAttachmentId) {
+  if (!sourceAttachmentId) return;
+  const parts = sourceAttachmentId.split(":");
+  if (parts.length < 3) return;
+  file.setProperty("sid_th", parts[0]);
+  file.setProperty("sid_pre", parts.slice(0, 3).join(":") + ":");
+}
+
+/**
+ * Searches a Drive folder for a file saved from this exact source attachment,
+ * using Drive custom properties (sid_th / sid_pre) set by setSourceProperties.
+ *
+ * Two-step process:
+ *  1. Drive query by sid_th (pure hex threadId, no Lucene-special chars)
+ *  2. In-memory filter by sid_pre (the threadId:msgId:index: prefix)
+ *
+ * NOTE: Drive API v3's `description contains` is NOT a valid query field and
+ * raises `Invalid argument: q`. Custom properties ARE queryable.
  *
  * @param {string|null} sourceAttachmentId - Deterministic source attachment ID
  * @param {Folder} folder - Drive folder to search in
@@ -31,38 +57,34 @@ function buildAttachmentMetadata(emailDate, sourceAttachmentId) {
 function findFileBySourceId(sourceAttachmentId, folder) {
   if (!sourceAttachmentId) return null;
   try {
-    // Drive query (Lucene) treats ":" as a field separator, so we cannot use
-    // the full sourceAttachmentId (threadId:msgId:index:filename:size) in the
-    // query string — even inside single-quoted values. Instead we search by
-    // threadId only (pure hex, guaranteed colon-free) and filter in-memory.
     const parts = sourceAttachmentId.split(":");
-    const threadId = parts[0];
+    const threadId = parts[0]; // hex only — safe for Drive query
     const safePrefix = parts.slice(0, 3).join(":") + ":";
-    const query = `'${folder.getId()}' in parents and description contains 'source_attachment_id=${threadId}'`;
+    // `properties has` is the correct query term for GAS File.setProperty().
+    // Only the threadId (hex) is in the query; the colon-containing safePrefix
+    // is compared in-memory to avoid Lucene colon-as-field-separator issues.
+    const query = `'${folder.getId()}' in parents and properties has { key='sid_th' and value='${threadId}' }`;
     logWithUser(
-      `findFileBySourceId: rawId=${sourceAttachmentId} | threadId=${threadId} | safePrefix=${safePrefix} | query=${query}`,
+      `findFileBySourceId: threadId=${threadId} safePrefix=${safePrefix}`,
       "DEBUG"
     );
     const results = DriveApp.searchFiles(query);
-    let candidatesChecked = 0;
     while (results.hasNext()) {
       const file = results.next();
-      candidatesChecked++;
-      const desc = file.getDescription() || "";
-      logWithUser(
-        `findFileBySourceId: candidate[${candidatesChecked}] name=${file.getName()} desc=${desc.substring(0, 120)}`,
-        "DEBUG"
-      );
-      if (desc.includes(`source_attachment_id=${safePrefix}`)) {
-        logWithUser(`findFileBySourceId: matched candidate[${candidatesChecked}]`, "DEBUG");
+      const storedPrefix = file.getProperty("sid_pre") || "";
+      if (storedPrefix === safePrefix) {
+        logWithUser(
+          `findFileBySourceId: matched ${file.getName()} (sid_pre=${storedPrefix})`,
+          "DEBUG"
+        );
         return file;
       }
     }
-    logWithUser(`findFileBySourceId: no match after ${candidatesChecked} candidates`, "DEBUG");
+    logWithUser(`findFileBySourceId: no match for safePrefix=${safePrefix}`, "DEBUG");
     return null;
   } catch (e) {
     logWithUser(
-      `findFileBySourceId: Drive search failed: ${e.message} | rawId=${sourceAttachmentId}`,
+      `findFileBySourceId: search failed: ${e.message} | rawId=${sourceAttachmentId}`,
       "WARNING"
     );
     return null;
@@ -74,12 +96,12 @@ function findFileBySourceId(sourceAttachmentId, folder) {
  *
  * Dedup strategy (in order of cost):
  * 1. Filename + size match in folder → duplicate, skip (cheap: one Drive folder scan)
- * 2. Drive description search by source_attachment_id → duplicate, skip
- *    (only reached on name collision or missing file — uncommon)
+ * 2. Drive property search by source attachment ID → duplicate, skip
+ *    (only reached on name collision — uncommon)
  * 3. No duplicate found → save as new file
  *
- * The source_attachment_id is always persisted in the file description so
- * that future runs can detect duplicates even if the filename changes.
+ * Every saved file gets two custom Drive properties (sid_th, sid_pre) so
+ * future runs can locate it even after a filename rename.
  *
  * @param {GmailAttachment} attachment - The email attachment
  * @param {GmailMessage} message - The email message containing the attachment
@@ -122,7 +144,7 @@ function saveAttachment(attachment, message, domainFolder, options = {}) {
       const renamedFile = findFileBySourceId(sourceAttachmentId, domainFolder);
       if (renamedFile) {
         logWithUser(
-          `Duplicate detected by source_attachment_id (renamed file): ${renamedFile.getName()}`,
+          `Duplicate detected by sid_pre (renamed file): ${renamedFile.getName()}`,
           "INFO"
         );
         return { success: true, duplicate: true, file: renamedFile };
@@ -134,9 +156,8 @@ function saveAttachment(attachment, message, domainFolder, options = {}) {
       const savedFile = domainFolder.createFile(
         attachment.copyBlob().setName(newName)
       );
-      savedFile.setDescription(
-        buildAttachmentMetadata(emailDate, sourceAttachmentId)
-      );
+      savedFile.setDescription(buildAttachmentMetadata(emailDate, sourceAttachmentId));
+      setSourceProperties(savedFile, sourceAttachmentId);
       logWithUser(
         `Successfully saved: ${newName} in ${domainFolder.getName()}`,
         "INFO"
@@ -144,12 +165,12 @@ function saveAttachment(attachment, message, domainFolder, options = {}) {
       return { success: true, duplicate: false, file: savedFile };
     }
 
-    // --- Stage 2: no file by that name — check description as safety net ---
+    // --- Stage 2: no file by that name — property search as safety net ---
     // Handles edge cases where the file exists under a different name.
     const fileBySourceId = findFileBySourceId(sourceAttachmentId, domainFolder);
     if (fileBySourceId) {
       logWithUser(
-        `Duplicate detected by source_attachment_id (different name): ${fileBySourceId.getName()}`,
+        `Duplicate detected by sid_pre (different name): ${fileBySourceId.getName()}`,
         "INFO"
       );
       return { success: true, duplicate: true, file: fileBySourceId };
@@ -157,9 +178,8 @@ function saveAttachment(attachment, message, domainFolder, options = {}) {
 
     // --- Stage 3: no duplicate found → save normally ---
     const savedFile = domainFolder.createFile(attachment);
-    savedFile.setDescription(
-      buildAttachmentMetadata(emailDate, sourceAttachmentId)
-    );
+    savedFile.setDescription(buildAttachmentMetadata(emailDate, sourceAttachmentId));
+    setSourceProperties(savedFile, sourceAttachmentId);
     logWithUser(
       `Successfully saved: ${attachmentName} in ${domainFolder.getName()}`,
       "INFO"
