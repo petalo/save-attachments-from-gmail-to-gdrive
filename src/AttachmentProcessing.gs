@@ -23,29 +23,34 @@ function buildAttachmentMetadata(emailDate, sourceAttachmentId) {
 /**
  * Builds a deterministic renamed filename for name-collision cases.
  *
- * Appends a stable suffix derived from the first 8 hex chars of threadId,
- * attachment index, and byte size. Deliberately omits messageId so that
- * identical content appearing in multiple messages of the same thread
- * (e.g. inline signature images) always maps to the same filename and is
- * detected as a duplicate by getFilesByName on subsequent runs.
+ * Appends a stable suffix based on email date (epoch seconds), attachment
+ * index, and byte size. These three values are invariant across all recipients
+ * of the same email, so any user processing the same message produces the
+ * same renamed filename — enabling cross-user duplicate detection via a
+ * simple getFilesByName lookup, with no Drive query needed.
  *
- * Example: "image.png" (101569 bytes, index 0, thread 19c4c18a…)
- *          → "image__19c4c18a_0_101569.png"
+ * Example: "image.png" (index 0, 101569 bytes, sent at epoch 1741039610)
+ *          → "image__1741039610_0_101569.png"
  *
- * Fallback (no sourceAttachmentId): timestamp suffix (previous behaviour).
+ * Why not threadId? Gmail threadIds are per-mailbox — two users in the same
+ * conversation have different threadIds, so threadId-based names would diverge
+ * across users and produce duplicates in the shared Drive folders.
+ *
+ * Fallback (no emailDate / sourceAttachmentId): timestamp suffix.
  *
  * @param {string} attachmentName - Original attachment filename
  * @param {string|null} sourceAttachmentId - Full attachment ID (threadId:msgId:index:...)
  * @param {number} attachmentBytes - Exact byte size of the attachment
+ * @param {Date|null} emailDate - Date of the email message
  * @returns {string} Renamed filename
  */
-function buildStableRename(attachmentName, sourceAttachmentId, attachmentBytes) {
+function buildStableRename(attachmentName, sourceAttachmentId, attachmentBytes, emailDate) {
   let suffix;
-  if (sourceAttachmentId) {
+  if (emailDate && sourceAttachmentId) {
     const parts = sourceAttachmentId.split(":");
     if (parts.length >= 3) {
-      // threadId (8 hex) + attachmentIndex + size — unique per (thread, slot, content)
-      suffix = `${parts[0].slice(0, 8)}_${parts[2]}_${attachmentBytes}`;
+      const dateEpoch = Math.floor(emailDate.getTime() / 1000);
+      suffix = `${dateEpoch}_${parts[2]}_${attachmentBytes}`;
     }
   }
   if (!suffix) {
@@ -111,7 +116,7 @@ function saveAttachment(attachment, message, domainFolder, options = {}) {
       // Same name, different size: a different attachment already holds that
       // filename. Check whether THIS attachment was already saved under its
       // stable renamed filename (deterministic from sourceAttachmentId).
-      const stableName = buildStableRename(attachmentName, sourceAttachmentId, attachmentBytes);
+      const stableName = buildStableRename(attachmentName, sourceAttachmentId, attachmentBytes, emailDate);
       const stableFiles = domainFolder.getFilesByName(stableName);
       if (stableFiles.hasNext()) {
         const existingRenamed = stableFiles.next();
