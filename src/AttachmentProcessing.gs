@@ -31,16 +31,24 @@ function buildAttachmentMetadata(emailDate, sourceAttachmentId) {
 function findFileBySourceId(sourceAttachmentId, folder) {
   if (!sourceAttachmentId) return null;
   try {
-    // Search by the safe prefix (threadId:messageId:attachmentIndex) only.
-    // The filename portion can contain characters that break Drive query syntax
-    // (e.g. "[" in "image[44].png" is a Lucene range operator). The first three
-    // colon-separated segments are always hex Gmail IDs + an integer index, so
-    // they are guaranteed to be query-safe and unique per attachment position.
-    const safePrefix = sourceAttachmentId.split(":").slice(0, 3).join(":") + ":";
+    // Drive query (Lucene) treats ":" as a field separator, so we cannot use
+    // the full sourceAttachmentId (threadId:msgId:index:filename:size) in the
+    // query string — even inside single-quoted values. Instead we search by
+    // threadId only (pure hex, guaranteed colon-free) and filter in-memory.
+    const parts = sourceAttachmentId.split(":");
+    const threadId = parts[0];
+    const safePrefix = parts.slice(0, 3).join(":") + ":";
     const results = DriveApp.searchFiles(
-      `'${folder.getId()}' in parents and description contains 'source_attachment_id=${safePrefix}'`
+      `'${folder.getId()}' in parents and description contains 'source_attachment_id=${threadId}'`
     );
-    return results.hasNext() ? results.next() : null;
+    while (results.hasNext()) {
+      const file = results.next();
+      const desc = file.getDescription() || "";
+      if (desc.includes(`source_attachment_id=${safePrefix}`)) {
+        return file;
+      }
+    }
+    return null;
   } catch (e) {
     logWithUser(
       `findFileBySourceId: Drive search failed: ${e.message}`,
