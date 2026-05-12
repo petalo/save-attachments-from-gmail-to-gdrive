@@ -121,8 +121,7 @@ function processUserEmails(userEmail, oldestFirst = true, deadlineMs = null) {
     }
 
     const pageSize = Math.max(1, CONFIG.batchSize);
-    // In incremental mode the window is always open-ended so offset resets to 0.
-    const searchOffset = isIncremental ? 0 : cursorOffset;
+    const searchOffset = cursorOffset;
     const threads = GmailApp.search(searchCriteria, searchOffset, pageSize);
     logWithUser(
       `Retrieved ${threads.length} threads (limit=${pageSize}, incremental=${isIncremental})`,
@@ -192,9 +191,10 @@ function processUserEmails(userEmail, oldestFirst = true, deadlineMs = null) {
       );
     } else {
       // Advance cursor only on full batch completion (not on timeout).
-      if (isIncremental) {
+      if (isIncremental && threads.length < pageSize) {
+        // Incremental buffer exhausted → advance cursor to now, reset offset.
         setUserCursorState(userEmail, now, 0);
-      } else if (threads.length < pageSize) {
+      } else if (!isIncremental && threads.length < pageSize) {
         // Catch-up window exhausted → move to next window, reset offset.
         setUserCursorState(userEmail, windowEndEpoch, 0);
       } else {
@@ -352,10 +352,12 @@ function processThreadsWithCounting(
               }
             });
 
-            // Pre-filter attachments to see if any valid ones exist
+            // Pre-filter attachments to see if any valid ones exist.
+            // Each entry retains its rawIndex (position in message.getAttachments())
+            // so sourceAttachmentId remains stable regardless of filter rule changes.
             const validAttachments = [];
-            for (let k = 0; k < attachments.length; k++) {
-              const attachment = attachments[k];
+            for (let rawIndex = 0; rawIndex < attachments.length; rawIndex++) {
+              const attachment = attachments[rawIndex];
               const fileName = attachment.getName();
               const fileSize = attachment.getSize();
 
@@ -382,7 +384,7 @@ function processThreadsWithCounting(
                 continue;
               }
 
-              validAttachments.push(attachment);
+              validAttachments.push({ attachment, rawIndex });
             }
 
             // Only create domain folder if we have valid attachments to save
@@ -416,11 +418,11 @@ function processThreadsWithCounting(
 
                 // Process each valid attachment
                 for (let k = 0; k < validAttachments.length; k++) {
-                  const attachment = validAttachments[k];
+                  const { attachment, rawIndex } = validAttachments[k];
                   const sourceAttachmentId = buildSourceAttachmentId(
                     threadId,
                     messageId,
-                    k,
+                    rawIndex,
                     attachment
                   );
                   logWithUser(
