@@ -411,37 +411,6 @@ function resetUserCursor(userEmail) {
 }
 
 /**
- * Generates a unique filename to avoid collisions in the same folder
- *
- * @param {string} originalFilename - The original file name
- * @param {Folder} folder - The Google Drive folder
- * @returns {string} A unique filename that doesn't exist in the folder
- */
-function getUniqueFilename(originalFilename, folder) {
-  // Extract base name and extension
-  const lastDotIndex = originalFilename.lastIndexOf(".");
-  const baseName =
-    lastDotIndex > 0
-      ? originalFilename.substring(0, lastDotIndex)
-      : originalFilename;
-  const extension =
-    lastDotIndex > 0 ? originalFilename.substring(lastDotIndex) : "";
-
-  // First try adding a timestamp
-  const timestamp = new Date().getTime();
-  let newName = `${baseName}_${timestamp}${extension}`;
-
-  // Check if this name exists
-  if (!folder.getFilesByName(newName).hasNext()) {
-    return newName;
-  }
-
-  // If timestamp wasn't enough, add a random string too
-  const randomString = Utilities.getUuid().substring(0, 8);
-  return `${baseName}_${timestamp}_${randomString}${extension}`;
-}
-
-/**
  * Extracts the domain from an email address
  * Handles both simple email addresses and those with display names
  *

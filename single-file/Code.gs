@@ -543,37 +543,6 @@ function resetUserCursor(userEmail) {
 }
 
 /**
- * Generates a unique filename to avoid collisions in the same folder
- *
- * @param {string} originalFilename - The original file name
- * @param {Folder} folder - The Google Drive folder
- * @returns {string} A unique filename that doesn't exist in the folder
- */
-function getUniqueFilename(originalFilename, folder) {
-  // Extract base name and extension
-  const lastDotIndex = originalFilename.lastIndexOf(".");
-  const baseName =
-    lastDotIndex > 0
-      ? originalFilename.substring(0, lastDotIndex)
-      : originalFilename;
-  const extension =
-    lastDotIndex > 0 ? originalFilename.substring(lastDotIndex) : "";
-
-  // First try adding a timestamp
-  const timestamp = new Date().getTime();
-  let newName = `${baseName}_${timestamp}${extension}`;
-
-  // Check if this name exists
-  if (!folder.getFilesByName(newName).hasNext()) {
-    return newName;
-  }
-
-  // If timestamp wasn't enough, add a random string too
-  const randomString = Utilities.getUuid().substring(0, 8);
-  return `${baseName}_${timestamp}_${randomString}${extension}`;
-}
-
-/**
  * Extracts the domain from an email address
  * Handles both simple email addresses and those with display names
  *
@@ -1806,8 +1775,9 @@ function getDomainFolder(sender, mainFolder) {
 
 /**
  * Builds description metadata to persist source linkage in the Drive file.
- * Stored for human readability; NOT used for dedup search (description is
- * not a valid Drive API query field — use custom properties instead).
+ * Stored for human readability only — not used for dedup search because
+ * neither `description contains` nor `properties has` work as Drive query
+ * fields on Shared Drive files via DriveApp.
  *
  * @param {Date} emailDate - Original email date
  * @param {string|null} sourceAttachmentId - Deterministic source attachment ID
@@ -1822,88 +1792,53 @@ function buildAttachmentMetadata(emailDate, sourceAttachmentId) {
 }
 
 /**
- * Stamps a saved Drive file with two custom properties so future runs can
- * locate it via a queryable Drive property search:
- *   sid_th  — the threadId (hex, colon-free) used as the Drive query term
- *   sid_pre — the "threadId:msgId:index:" prefix used for in-memory matching
+ * Builds a deterministic renamed filename for name-collision cases.
  *
- * Drive's `description contains` query is NOT a valid query field (v3 API),
- * but `properties has { key='K' and value='V' }` IS supported.
+ * Appends a stable suffix derived from the first 8 hex chars of threadId and
+ * messageId, plus the attachment index. This makes the renamed filename
+ * deterministic across runs, so Stage 1 (getFilesByName) can detect it on
+ * re-scans without any Drive query.
  *
- * @param {DriveFile} file - The Drive file to annotate
- * @param {string|null} sourceAttachmentId - Full attachment ID
+ * Example: "image.png" + "19c4c18a31097bda:19cb54ff...:0:..." → "image__19c4c18a_19cb54ff_0.png"
+ *
+ * Fallback (no sourceAttachmentId): timestamp suffix (previous behaviour).
+ *
+ * @param {string} attachmentName - Original attachment filename
+ * @param {string|null} sourceAttachmentId - Full attachment ID (threadId:msgId:index:...)
+ * @returns {string} Renamed filename
  */
-function setSourceProperties(file, sourceAttachmentId) {
-  if (!sourceAttachmentId) return;
-  const parts = sourceAttachmentId.split(":");
-  if (parts.length < 3) return;
-  file.setProperty("sid_th", parts[0]);
-  file.setProperty("sid_pre", parts.slice(0, 3).join(":") + ":");
-}
-
-/**
- * Searches a Drive folder for a file saved from this exact source attachment,
- * using Drive custom properties (sid_th / sid_pre) set by setSourceProperties.
- *
- * Two-step process:
- *  1. Drive query by sid_th (pure hex threadId, no Lucene-special chars)
- *  2. In-memory filter by sid_pre (the threadId:msgId:index: prefix)
- *
- * NOTE: Drive API v3's `description contains` is NOT a valid query field and
- * raises `Invalid argument: q`. Custom properties ARE queryable.
- *
- * @param {string|null} sourceAttachmentId - Deterministic source attachment ID
- * @param {Folder} folder - Drive folder to search in
- * @returns {DriveFile|null} Matching file or null
- */
-function findFileBySourceId(sourceAttachmentId, folder) {
-  if (!sourceAttachmentId) return null;
-  try {
+function buildStableRename(attachmentName, sourceAttachmentId) {
+  let suffix;
+  if (sourceAttachmentId) {
     const parts = sourceAttachmentId.split(":");
-    const threadId = parts[0]; // hex only — safe for Drive query
-    const safePrefix = parts.slice(0, 3).join(":") + ":";
-    // `properties has` is the correct query term for GAS File.setProperty().
-    // Only the threadId (hex) is in the query; the colon-containing safePrefix
-    // is compared in-memory to avoid Lucene colon-as-field-separator issues.
-    const query = `'${folder.getId()}' in parents and properties has { key='sid_th' and value='${threadId}' }`;
-    logWithUser(
-      `findFileBySourceId: threadId=${threadId} safePrefix=${safePrefix}`,
-      "DEBUG"
-    );
-    const results = DriveApp.searchFiles(query);
-    while (results.hasNext()) {
-      const file = results.next();
-      const storedPrefix = file.getProperty("sid_pre") || "";
-      if (storedPrefix === safePrefix) {
-        logWithUser(
-          `findFileBySourceId: matched ${file.getName()} (sid_pre=${storedPrefix})`,
-          "DEBUG"
-        );
-        return file;
-      }
+    if (parts.length >= 3) {
+      suffix = `${parts[0].slice(0, 8)}_${parts[1].slice(0, 8)}_${parts[2]}`;
     }
-    logWithUser(`findFileBySourceId: no match for safePrefix=${safePrefix}`, "DEBUG");
-    return null;
-  } catch (e) {
-    logWithUser(
-      `findFileBySourceId: search failed: ${e.message} | rawId=${sourceAttachmentId}`,
-      "WARNING"
-    );
-    return null;
   }
+  if (!suffix) {
+    suffix = Date.now().toString();
+  }
+  const dotIdx = attachmentName.lastIndexOf(".");
+  return dotIdx >= 0
+    ? `${attachmentName.slice(0, dotIdx)}__${suffix}${attachmentName.slice(dotIdx)}`
+    : `${attachmentName}__${suffix}`;
 }
 
 /**
  * Saves an attachment to a Drive folder with two-stage duplicate detection.
  *
- * Dedup strategy (in order of cost):
- * 1. Filename + size match in folder → duplicate, skip (cheap: one Drive folder scan)
- * 2. Drive property search by source attachment ID → duplicate, skip
- *    (only reached on name collision — uncommon)
- * 3. No duplicate found → save as new file
+ * Dedup strategy:
+ * 1. Filename + size match in folder → duplicate, skip  (cheap: exact name lookup)
+ * 2a. Name collision (same name, different size): look up stable renamed file
+ *     by its deterministic name → duplicate, skip if found; save under stable
+ *     name otherwise
+ * 2b. No name collision: save normally
  *
- * Every saved file gets two custom Drive properties (sid_th, sid_pre) so
- * future runs can locate it even after a filename rename.
+ * NOTE on Drive query limitations: DriveApp.searchFiles() on Shared Drive
+ * files does not support `description contains` or `properties has` query
+ * terms — both raise `Invalid argument: q`. DriveFile.setProperty() is
+ * also unavailable on Shared Drive files. Dedup therefore relies entirely
+ * on getFilesByName() (exact lookup, always works).
  *
  * @param {GmailAttachment} attachment - The email attachment
  * @param {GmailMessage} message - The email message containing the attachment
@@ -1924,13 +1859,12 @@ function saveAttachment(attachment, message, domainFolder, options = {}) {
     );
     logWithUser(`Email date: ${emailDate.toISOString()}`, "DEBUG");
 
-    // --- Stage 1: filename + size match (fast path) ---
+    // --- Stage 1: exact filename + size match (fast path) ---
     const existingFiles = domainFolder.getFilesByName(attachmentName);
     let nameCollision = false;
     while (existingFiles.hasNext()) {
       nameCollision = true;
       const existingFile = existingFiles.next();
-
       if (existingFile.getSize() === attachmentBytes) {
         logWithUser(
           `Duplicate detected by name+size: ${attachmentName}`,
@@ -1941,47 +1875,40 @@ function saveAttachment(attachment, message, domainFolder, options = {}) {
     }
 
     if (nameCollision) {
-      // Name collision (same name, different size): check if this exact
-      // attachment was already saved under a renamed filename.
-      const renamedFile = findFileBySourceId(sourceAttachmentId, domainFolder);
-      if (renamedFile) {
+      // Same name, different size: a different attachment already holds that
+      // filename. Check whether THIS attachment was already saved under its
+      // stable renamed filename (deterministic from sourceAttachmentId).
+      const stableName = buildStableRename(attachmentName, sourceAttachmentId);
+      const stableFiles = domainFolder.getFilesByName(stableName);
+      if (stableFiles.hasNext()) {
+        const existingRenamed = stableFiles.next();
         logWithUser(
-          `Duplicate detected by sid_pre (renamed file): ${renamedFile.getName()}`,
+          `Duplicate detected by stable rename: ${stableName}`,
           "INFO"
         );
-        return { success: true, duplicate: true, file: renamedFile };
+        return { success: true, duplicate: true, file: existingRenamed };
       }
 
-      // Genuine new attachment with a name collision → rename and save.
-      const newName = getUniqueFilename(attachmentName, domainFolder);
-      logWithUser(`Name collision, saving as: ${newName}`, "INFO");
+      // Genuine new attachment → save under stable renamed name.
+      logWithUser(`Name collision, saving as: ${stableName}`, "INFO");
       const savedFile = domainFolder.createFile(
-        attachment.copyBlob().setName(newName)
+        attachment.copyBlob().setName(stableName)
       );
-      savedFile.setDescription(buildAttachmentMetadata(emailDate, sourceAttachmentId));
-      setSourceProperties(savedFile, sourceAttachmentId);
+      savedFile.setDescription(
+        buildAttachmentMetadata(emailDate, sourceAttachmentId)
+      );
       logWithUser(
-        `Successfully saved: ${newName} in ${domainFolder.getName()}`,
+        `Successfully saved: ${stableName} in ${domainFolder.getName()}`,
         "INFO"
       );
       return { success: true, duplicate: false, file: savedFile };
     }
 
-    // --- Stage 2: no file by that name — property search as safety net ---
-    // Handles edge cases where the file exists under a different name.
-    const fileBySourceId = findFileBySourceId(sourceAttachmentId, domainFolder);
-    if (fileBySourceId) {
-      logWithUser(
-        `Duplicate detected by sid_pre (different name): ${fileBySourceId.getName()}`,
-        "INFO"
-      );
-      return { success: true, duplicate: true, file: fileBySourceId };
-    }
-
-    // --- Stage 3: no duplicate found → save normally ---
+    // --- No name collision → save normally ---
     const savedFile = domainFolder.createFile(attachment);
-    savedFile.setDescription(buildAttachmentMetadata(emailDate, sourceAttachmentId));
-    setSourceProperties(savedFile, sourceAttachmentId);
+    savedFile.setDescription(
+      buildAttachmentMetadata(emailDate, sourceAttachmentId)
+    );
     logWithUser(
       `Successfully saved: ${attachmentName} in ${domainFolder.getName()}`,
       "INFO"
