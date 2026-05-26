@@ -19,8 +19,10 @@
  *    - Cannot trigger permission prompts for other users
  * 5. Caches the result for future checks within the same script execution
  *
- * This verification is crucial for multi-user scripts to ensure each user
- * has granted the necessary permissions before attempting to process their data.
+ * Administrative helper for onboarding. Not used at runtime — the script
+ * runs only as the effective user. Useful for offline verification that
+ * a registered user has granted the necessary OAuth scopes before being
+ * expected to run their own trigger.
  */
 function verifyUserPermissions(userEmail) {
   // If userEmail is not provided, use the current user's email

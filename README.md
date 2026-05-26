@@ -73,7 +73,7 @@ This is the quickest way to get the script running.
 1. Set up environment-specific configuration files:
    - Create `.env.prod` for production environment (see `.env.example`). **This file is mandatory** as production is the default environment.
    - Optionally create `.env.test` for test environment (see `.env.example`).
-   - Include `FOLDER_ID`, `SCRIPT_ID`, and `PROCESSED_LABEL_NAME` in each file.
+   - Include `FOLDER_ID` and `SCRIPT_ID` in each file.
 
 2. Run `npm install` to install dependencies.
 
@@ -102,7 +102,6 @@ Each environment can have its own:
 
 - Google Drive folder (via `FOLDER_ID`)
 - Google Apps Script project (via `SCRIPT_ID`)
-- Gmail label (via `PROCESSED_LABEL_NAME`)
 
 **Ideal for:**
 
@@ -127,6 +126,8 @@ Each environment can have its own:
     - `FolderManagement.gs`
     - `AttachmentProcessing.gs`
     - `GmailProcessing.gs`
+    - `LabelManagement.gs`
+    - `ThreadState.gs`
     - `Main.gs`
     - `Debug.gs` (optional)
     - `appsscript.json`
@@ -216,7 +217,7 @@ flowchart TD
   C -- "No" --> X["Exit early (another execution running)"]
   C -- "Yes" --> D["Execution model: effective user mailbox only"]
   D --> E["Recover stale Processing states (TTL + bounded batch)"]
-  E --> F["Search one Gmail page: has:attachment and not Processed/Permanent/TooLarge"]
+  E --> F["Search one Gmail page: has:attachment within cursor window, excluding -label:GDrive_Error_Permanent and -label:GDrive_TooLarge"]
   F --> G{"Threads found?"}
   G -- "No" --> Y["Release lock and finish"]
   G -- "Yes" --> H["Process page oldest-first (batchSize)"]
@@ -235,8 +236,8 @@ flowchart TD
   P --> J
 
   J --> Q{"Thread outcome"}
-  Q -- "Saved without failures/too_large" --> Q1["Label Processed; clear Error/Permanent/TooLarge; clear failure state"]
-  Q -- "Only filtered attachments" --> Q2["Label Processed; clear Error/Permanent/TooLarge; clear failure state"]
+  Q -- "Saved without failures/too_large" --> Q1["Clear Error/Permanent/TooLarge labels and failure state; advance cursor when window exhausted"]
+  Q -- "Only filtered attachments" --> Q2["Clear Error/Permanent/TooLarge labels and failure state"]
   Q -- "Save failures" --> Q3["Label Error; add Permanent if retry limit exceeded"]
   Q -- "Only too_large attachments" --> Q4["Label TooLarge"]
 
@@ -265,7 +266,7 @@ flowchart TD
     - Does not rotate or impersonate other users during runtime.
     - Supports parallelism by letting each user run their own trigger safely.
 3. **Email Discovery:**
-    - Searches Gmail for unprocessed emails with attachments.
+    - Searches Gmail for emails with attachments using the per-user date cursor (catch-up window or incremental buffer; see "Thread Processing and Cursor System").
     - Processes emails from oldest to newest by default (configurable).
     - Limits processing to a configurable batch size to prevent timeouts.
 4. **Attachment Processing:**
@@ -303,9 +304,13 @@ The cursor only advances after a batch completes without timeout, preventing dat
 
 If no cursor exists (first deployment, or after manual reset via `UserProperties`), the cursor is initialized to `now - initialCursorDaysBack` days ago. All threads from that point onward will be scanned. Attachments already saved in Drive are detected and skipped via the `source_attachment_id` stored in each file's description — no duplicates are created.
 
-**The `GDrive_Processed` label:**
+**Labels applied to threads:**
 
-The label is retained as a **cosmetic badge** only — it appears in Gmail so you can see which threads have been processed. It is no longer used as a search filter. The cursor + `source_attachment_id` dedup together replace its functional role.
+The script no longer uses a "Processed" label. Threads are tracked via the per-user date cursor in `UserProperties` plus `source_attachment_id` dedupe stored in each Drive file's description. Three labels remain, applied only on non-success outcomes:
+
+- `GDrive_Processing` — transient, applied while a thread is in-flight and removed in `finally`.
+- `GDrive_Error` — applied when one or more attachments failed to save (transient). Promoted to `GDrive_Error_Permanent` after retry exhaustion.
+- `GDrive_TooLarge` — applied when a thread contains attachments above `maxFileSize`.
 
 **Handling new messages in active threads:**
 
@@ -380,7 +385,12 @@ The `Config.gs` file contains all configurable options, allowing you to tailor t
 **General Configuration Options:**
 
 - `mainFolderId`: ID of the main Google Drive folder where attachments will be saved.
-- `processedLabelName`: Name of the Gmail label to apply to processed messages.
+- `processingLabelName`: Transient label applied while a thread is in-flight (default: `GDrive_Processing`).
+- `errorLabelName`: Label applied to threads with transient save failures (default: `GDrive_Error`).
+- `permanentErrorLabelName`: Label applied after retry exhaustion; excluded from future searches (default: `GDrive_Error_Permanent`).
+- `tooLargeLabelName`: Label applied when attachments exceed `maxFileSize`; excluded from future searches (default: `GDrive_TooLarge`).
+- `maxThreadFailureRetries`: Failure count at which a thread is escalated from `Error` to `Permanent` (default: 3).
+- `maxFileSize`: Maximum size for an individual attachment (default: 25MB).
 - `skipDomains`: Array of email domains to exclude from processing.
 - `skipSmallImages`: Set to `true` to avoid saving small images like email signatures.
 - `smallImageMaxSize`: Maximum size in bytes for images to be skipped (default: 20KB).
@@ -397,7 +407,7 @@ The `Config.gs` file contains all configurable options, allowing you to tailor t
 
 **Resetting the cursor:**
 
-To force a full re-scan from `initialCursorDaysBack` days ago, run `resetUserCursor()` directly from the Apps Script editor. It deletes the stored cursor for the current user; the next execution reinitializes it and enters catch-up mode. Already-saved attachments are not duplicated.
+To force a full re-scan from `initialCursorDaysBack` days ago, run `resetUserCursor(Session.getEffectiveUser().getEmail())` from the Apps Script editor (the function takes the target user's email as its only argument). It deletes the stored cursor; the next execution reinitializes it and enters catch-up mode. Already-saved attachments are not duplicated.
 
 ## Advanced Usage
 
@@ -405,17 +415,14 @@ This section covers advanced usage patterns and customization options.
 
 ### Custom Processing Options
 
-The main function `saveAttachmentsToDrive()` supports optional parameters to modify its behavior:
+The entry point `saveAttachmentsToDrive()` takes no arguments and always processes oldest-first. To change ordering, call `processUserEmails()` directly from a custom wrapper:
 
 ```javascript
-//   Process with default options (oldest emails first)
-saveAttachmentsToDrive();
-
-//   Process newest emails first
-saveAttachmentsToDrive({ oldestFirst: false });
+function saveAttachmentsToDriveNewestFirst() {
+  const user = Session.getEffectiveUser().getEmail();
+  processUserEmails(user, /* oldestFirst */ false);
+}
 ```
-
-By default, the script processes emails from oldest to newest. You can use the `oldestFirst` parameter to change this.
 
 ## Performance Considerations
 
@@ -459,6 +466,8 @@ Understanding the file structure can be helpful for debugging or extending the s
 - `FolderManagement.gs`: Google Drive folder creation and management.
 - `AttachmentProcessing.gs`: Functions for saving attachments to Drive.
 - `GmailProcessing.gs`: Gmail thread and message processing.
+- `LabelManagement.gs`: Gmail label lookup/creation (Processing, Error, Permanent, TooLarge).
+- `ThreadState.gs`: Per-thread processing/failure state in `ScriptProperties`.
 - `Main.gs`: Entry points and main execution flow.
 - `Debug.gs`: Manual debug helpers (not used in automated runs).
 - `appsscript.json`: Script manifest with required OAuth scopes.
@@ -516,9 +525,6 @@ npm run logout             # Logout from Google
 npm run status             # View status of files
 npm run open               # Open the script in Google Apps Script editor
 npm run pull               # Download the latest version from Google Apps Script
-
-#   Testing commands
-npm run test               # Test if the folder ID is valid
 ```
 
 ## License

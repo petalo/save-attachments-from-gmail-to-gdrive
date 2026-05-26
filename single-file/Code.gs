@@ -2,15 +2,15 @@
  * Gmail Attachment Organizer
  *
  * This script automatically organizes Gmail attachments in Google Drive
- * by the sender's email domain. It processes unread emails with attachments,
- * extracts the attachments, and saves them to Google Drive folders organized
- * by the sender's domain.
+ * by the sender's email domain. It searches Gmail for messages with
+ * attachments inside a per-user date cursor window, extracts the attachments,
+ * and saves them to Google Drive folders organized by the sender's domain.
  *
  * Key features:
  * - Automatic organization by sender domain
  * - Configurable filters for file types and sizes
  * - Scheduled processing via time-based triggers
- * - Multi-user support with permission management
+ * - Per-user execution model (each user runs their own trigger; no impersonation at runtime)
  * - Robust error handling with retry logic
  * - Duplicate file detection
  * - Timestamp preservation from original emails
@@ -31,8 +31,10 @@ const CONFIG = {
   // This is the main parent folder that will contain domain subfolders
   mainFolderId: "__FOLDER_ID__", // Replace with your Google Drive shared folder's ID
 
-  // Gmail label applied to threads after processing
-  // This prevents the same emails from being processed multiple times
+  // Transient label applied while a thread is in-flight; removed in finally().
+  // Used together with ThreadState's processing checkpoint to detect and recover
+  // stale runs (interrupted by 6-minute timeout). NOT used for dedup —
+  // that's the cursor + source_attachment_id.
   processingLabelName: "GDrive_Processing",
   errorLabelName: "GDrive_Error",
   permanentErrorLabelName: "GDrive_Error_Permanent",
@@ -642,8 +644,10 @@ function testFolderId() {
  *    - Cannot trigger permission prompts for other users
  * 5. Caches the result for future checks within the same script execution
  *
- * This verification is crucial for multi-user scripts to ensure each user
- * has granted the necessary permissions before attempting to process their data.
+ * Administrative helper for onboarding. Not used at runtime — the script
+ * runs only as the effective user. Useful for offline verification that
+ * a registered user has granted the necessary OAuth scopes before being
+ * expected to run their own trigger.
  */
 function verifyUserPermissions(userEmail) {
   // If userEmail is not provided, use the current user's email

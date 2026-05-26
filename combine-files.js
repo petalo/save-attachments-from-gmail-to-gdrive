@@ -148,15 +148,15 @@ const header = `/**
  * Gmail Attachment Organizer
  *
  * This script automatically organizes Gmail attachments in Google Drive
- * by the sender's email domain. It processes unread emails with attachments,
- * extracts the attachments, and saves them to Google Drive folders organized
- * by the sender's domain.
+ * by the sender's email domain. It searches Gmail for messages with
+ * attachments inside a per-user date cursor window, extracts the attachments,
+ * and saves them to Google Drive folders organized by the sender's domain.
  *
  * Key features:
  * - Automatic organization by sender domain
  * - Configurable filters for file types and sizes
  * - Scheduled processing via time-based triggers
- * - Multi-user support with permission management
+ * - Per-user execution model (each user runs their own trigger; no impersonation at runtime)
  * - Robust error handling with retry logic
  * - Duplicate file detection
  * - Timestamp preservation from original emails

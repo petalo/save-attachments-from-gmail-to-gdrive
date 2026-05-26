@@ -15,8 +15,10 @@ const CONFIG = {
   // This is the main parent folder that will contain domain subfolders
   mainFolderId: "__FOLDER_ID__", // Replace with your Google Drive shared folder's ID
 
-  // Gmail label applied to threads after processing
-  // This prevents the same emails from being processed multiple times
+  // Transient label applied while a thread is in-flight; removed in finally().
+  // Used together with ThreadState's processing checkpoint to detect and recover
+  // stale runs (interrupted by 6-minute timeout). NOT used for dedup —
+  // that's the cursor + source_attachment_id.
   processingLabelName: "GDrive_Processing",
   errorLabelName: "GDrive_Error",
   permanentErrorLabelName: "GDrive_Error_Permanent",
